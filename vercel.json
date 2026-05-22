@@ -3,7 +3,6 @@
   "framework": "nextjs",
   "buildCommand": "npm run build",
   "installCommand": "npm install",
-  "regions": ["hkg1", "sin1"],
   "functions": {
     "app/api/recognize/route.ts": {
       "maxDuration": 60
