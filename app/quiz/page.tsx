@@ -18,7 +18,12 @@ import {
 type QuizType = 't1' | 't2' | 't3' | 't5';
 
 interface T1Quiz { type: 't1'; handCodes: string[]; waitingTiles: { code: string; remaining: number }[] }
-interface T2Quiz { type: 't2'; handCodes: string[]; bestDiscards: { code: string; rank: number; effectiveCount: number }[] }
+interface T2Quiz {
+  type: 't2';
+  handCodes: string[];
+  bestDiscards: { code: string; rank: number; effectiveCount: number; expectedScore?: number; reasons?: string[] }[];
+  algorithm?: 'expectedScore';
+}
 interface T3Quiz extends Omit<T2Quiz, 'type'> { type: 't3'; visibleCodes: string[] }
 type Quiz = T1Quiz | T2Quiz | T3Quiz;
 
@@ -303,11 +308,28 @@ export default function QuizPage() {
                     </div>
                   ) : (
                     <div className="space-y-1.5">
+                      <div className="text-xs text-emerald-700 mb-1">
+                        ⚙️ 使用算法：<b>综合推荐（下叫速度 + 考量番数）</b> · 同时考虑听张数、胡牌概率、保留根/暗刻、七对/清一色潜力
+                      </div>
                       {(quiz as T2Quiz).bestDiscards.map(d => (
-                        <div key={d.code} className="flex items-center gap-3">
-                          <span className="pill bg-white border border-sage-200">#{d.rank}</span>
-                          <MJTile code={d.code} size="sm" highlight={d.rank === 1} />
-                          <span className="text-xs text-sage-600">有效进张 {d.effectiveCount} 张</span>
+                        <div key={d.code} className="border border-sage-100 rounded-lg p-2 bg-white/70">
+                          <div className="flex items-center gap-3 flex-wrap">
+                            <span className="pill bg-white border border-sage-200">#{d.rank}</span>
+                            <MJTile code={d.code} size="sm" highlight={d.rank === 1} />
+                            <span className="text-xs text-sage-600">有效进张 {d.effectiveCount} 张</span>
+                            {typeof d.expectedScore === 'number' && (
+                              <span className="pill bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs">
+                                综合 {d.expectedScore.toFixed(2)}
+                              </span>
+                            )}
+                          </div>
+                          {d.reasons && d.reasons.length > 0 && (
+                            <ul className="mt-1 text-xs text-sage-600 space-y-0.5 pl-1">
+                              {d.reasons.map((r, i) => (
+                                <li key={i}>· {r}</li>
+                              ))}
+                            </ul>
+                          )}
                         </div>
                       ))}
                     </div>

@@ -6,19 +6,42 @@ import { TilePicker } from '@/components/TilePicker';
 
 type Phase = 'win' | 'tenpai' | 'noten';
 
+interface DiscardSuggestion {
+  discard: number;
+  discardCode: string;
+  actionType?: 'discard' | 'concealedKong';
+  shantenAfter: number;
+  effectiveTiles: { index: number; code: string; remaining: number }[];
+  effectiveCount: number;
+  probability?: number;
+  expectedScore?: number;
+  speedScore?: number;
+  valueScore?: number;
+  winProbability?: number;
+  averageFan?: number;
+  maxFanPotential?: number;
+  fanDistribution?: { fan: number; count: number }[];
+  lostGen?: number;
+  preservedGen?: number;
+  lostTriplets?: number;
+  preservedTriplets?: number;
+  sevenPairsPotential?: number;
+  longSevenPairsPotential?: number;
+  allPungsPotential?: number;
+  pureSuitPotential?: number;
+  riskPenalty?: number;
+  reasons?: string[];
+}
+
 interface AnalysisResult {
   phase: Phase;
   shanten: { shanten: number; type: string; needDropSuit?: string };
   isWin: boolean;
   waitingTiles?: { index: number; code: string; remaining: number; winType: string; fan?: number }[];
-  suggestedDiscards?: {
-    discard: number;
-    discardCode: string;
-    shantenAfter: number;
-    effectiveTiles: { index: number; code: string; remaining: number }[];
-    effectiveCount: number;
-    probability?: number;
-  }[];
+  suggestedDiscards?: DiscardSuggestion[];
+  evSuggestions?: DiscardSuggestion[];
+  speedSuggestions?: DiscardSuggestion[];
+  objective?: 'expectedScore' | 'speed';
   warnings: string[];
   handSummary: string;
   remainingPoolHint?: { code: string; remaining: number }[];
@@ -40,6 +63,9 @@ export default function Home() {
   const [melds, setMelds] = useState<{ type: 'pung' | 'kong'; tile: string }[]>([]);
   const [genMode, setGenMode] = useState<'fan' | 'di'>('fan');
   const [isHaidi, setIsHaidi] = useState(false);
+  const [isAfterKong, setIsAfterKong] = useState(false);
+  const [isKongDischarge, setIsKongDischarge] = useState(false);
+  const [isRobKong, setIsRobKong] = useState(false);
   const [baseScore, setBaseScore] = useState(1);
   const [fanCap, setFanCap] = useState(4);
   const [recognizing, setRecognizing] = useState(false);
@@ -157,8 +183,12 @@ export default function Home() {
           melds,
           genMode,
           isHaidi,
+          isAfterKong,
+          isKongDischarge,
+          isRobKong,
           baseScore,
-          fanCap
+          fanCap,
+          objective: 'expectedScore'
         })
       });
       const data = await res.json();
@@ -326,6 +356,9 @@ export default function Home() {
         )}
       </section>
 
+      {/* 开局助手：定缺 / 换三张 / 碰决策 */}
+      <OpeningAssistant hand={hand} melds={melds} visible={visible} />
+
       {/* 第 3 步：结算设置 + 分析 */}
       <section className="glass-card p-5 md:p-6 mt-6">
         <h2 className="text-lg font-semibold text-sage-800 mb-3">③ 结算设置</h2>
@@ -350,7 +383,34 @@ export default function Home() {
               onChange={e => setIsHaidi(e.target.checked)}
               className="accent-sage-500"
             />
-            海底捞月（最后一张胡）
+            海底捞月
+          </label>
+          <label className="flex items-center gap-1 text-sage-700">
+            <input
+              type="checkbox"
+              checked={isAfterKong}
+              onChange={e => setIsAfterKong(e.target.checked)}
+              className="accent-sage-500"
+            />
+            杠上花 (+2 番)
+          </label>
+          <label className="flex items-center gap-1 text-sage-700">
+            <input
+              type="checkbox"
+              checked={isKongDischarge}
+              onChange={e => setIsKongDischarge(e.target.checked)}
+              className="accent-sage-500"
+            />
+            杠上炮 (+1 番)
+          </label>
+          <label className="flex items-center gap-1 text-sage-700">
+            <input
+              type="checkbox"
+              checked={isRobKong}
+              onChange={e => setIsRobKong(e.target.checked)}
+              className="accent-sage-500"
+            />
+            抢杠胡 (+1 番)
           </label>
           <label className="flex items-center gap-1 text-sage-700">
             底分
@@ -448,6 +508,15 @@ function Footer() {
           <div className="text-xs text-sage-500 mt-2">谢谢支持 ☕</div>
         </div>
       )}
+      <div className="mt-4 text-xs text-sage-600">
+        反馈 bug / 商务合作 联系邮箱：
+        <a
+          href="mailto:1507971639@qq.com"
+          className="ml-1 text-sage-700 hover:text-sage-900 underline underline-offset-2"
+        >
+          1507971639@qq.com
+        </a>
+      </div>
     </footer>
   );
 }
@@ -551,17 +620,47 @@ function ResultPanel({ result, totalUnseen }: { result: AnalysisResult; totalUns
         );
       })()}
 
-      {/* 14 张未听：出牌建议 */}
+      {/* 14 张未听：出牌建议（主推荐 = EV，次要 = 速度优先） */}
       {result.phase !== 'win' && result.suggestedDiscards && result.suggestedDiscards.length > 0 && result.suggestedDiscards[0].discard >= 0 && (
         <div>
-          <h3 className="text-sm font-semibold text-sage-700 mb-2">
-            出牌建议 · Top {Math.min(result.suggestedDiscards.length, 6)}
-          </h3>
+          <div className="flex items-baseline gap-2 mb-2 flex-wrap">
+            <h3 className="text-sm font-semibold text-sage-700">
+              出牌建议 · Top {Math.min(result.suggestedDiscards.length, 6)}
+            </h3>
+            <span className="pill bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs">
+              综合推荐（下叫速度 + 考量番数）
+            </span>
+          </div>
+          <p className="text-xs text-sage-500 mb-2">
+            综合考虑两个维度：<span className="text-sky-700">下叫速度</span>（多快能下叫/胡牌）+ <span className="text-violet-700">考量番数</span>（番数潜力、保留根和暗刻）。两者相加得到"综合"分。
+          </p>
           <div className="space-y-2">
             {result.suggestedDiscards.slice(0, 6).map((s, i) => (
-              <DiscardRow key={s.discardCode} suggestion={s} rank={i + 1} bestEffective={totalEffective} />
+              <DiscardRow key={`ev-${s.discardCode}`} suggestion={s} rank={i + 1} bestEffective={totalEffective} mode="ev" />
             ))}
           </div>
+
+          {/* 速度优先备选方案（如果与主推不同） */}
+          {result.speedSuggestions && result.speedSuggestions.length > 0 && (() => {
+            const speedTop = result.speedSuggestions[0];
+            const evTop = result.suggestedDiscards![0];
+            if (speedTop.discardCode === evTop.discardCode) return null;
+            return (
+              <details className="mt-4 rounded-xl border border-amber-200 bg-amber-50/60 p-3">
+                <summary className="cursor-pointer text-sm font-semibold text-amber-900">
+                  ⚡ 速度优先方案（最快下叫算法结果，仅供对比）
+                </summary>
+                <p className="text-xs text-amber-800 mt-2">
+                  此方案只看"打后向听数 + 进张数"，不考虑根/番数/EV。下面是该算法的 Top 3：
+                </p>
+                <div className="space-y-2 mt-2">
+                  {result.speedSuggestions.slice(0, 3).map((s, i) => (
+                    <DiscardRow key={`speed-${s.discardCode}`} suggestion={s} rank={i + 1} bestEffective={result.speedSuggestions![0].effectiveCount} mode="speed" />
+                  ))}
+                </div>
+              </details>
+            );
+          })()}
         </div>
       )}
 
@@ -600,29 +699,105 @@ function ResultPanel({ result, totalUnseen }: { result: AnalysisResult; totalUns
 function DiscardRow({
   suggestion,
   rank,
-  bestEffective
+  bestEffective,
+  mode = 'ev'
 }: {
   suggestion: NonNullable<AnalysisResult['suggestedDiscards']>[number];
   rank: number;
   bestEffective: number;
+  mode?: 'ev' | 'speed';
 }) {
   const widthPct = bestEffective > 0 ? Math.round((suggestion.effectiveCount / bestEffective) * 100) : 0;
+  const isEv = mode === 'ev';
+  const accent = isEv
+    ? (rank === 1 ? 'bg-emerald-500 text-white' : 'bg-emerald-100 text-emerald-700')
+    : (rank === 1 ? 'bg-amber-500 text-white' : 'bg-amber-100 text-amber-700');
   return (
-    <div className="border border-sage-100 rounded-xl p-3 bg-white/60">
+    <div className={`border rounded-xl p-3 ${isEv ? 'border-emerald-200 bg-white/70' : 'border-amber-200 bg-white/60'}`}>
       <div className="flex items-center gap-3 flex-wrap">
-        <span className={`pill ${rank === 1 ? 'bg-sage-500 text-white' : 'bg-sage-100 text-sage-700'}`}>
-          #{rank}
-        </span>
-        <span className="text-xs text-sage-600">打出：</span>
-        <MJTile code={suggestion.discardCode} size="sm" highlight={rank === 1} />
-        <span className="text-xs text-sage-700">
-          打后向听 <b>{suggestion.shantenAfter}</b> ·
-          有效进张 <b>{suggestion.effectiveCount}</b> 张 / {suggestion.effectiveTiles.length} 种
-          {typeof suggestion.probability === 'number' && (
-            <span className="ml-1 text-emerald-700">· 摸进概率 <b>{(suggestion.probability * 100).toFixed(1)}%</b></span>
-          )}
-        </span>
+        <span className={`pill ${accent}`}>#{rank}</span>
+        {suggestion.actionType === 'concealedKong' ? (
+          <>
+            <span className="pill bg-purple-100 text-purple-700 border border-purple-300 text-xs font-semibold">
+              ⛓️ 暗杠
+            </span>
+            <MJTile code={suggestion.discardCode} size="sm" highlight={rank === 1} />
+            <span className="text-xs text-sage-700">
+              杠后 +1 根、不影响向听
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="text-xs text-sage-600">打出：</span>
+            <MJTile code={suggestion.discardCode} size="sm" highlight={rank === 1} />
+            <span className="text-xs text-sage-700">
+              打后向听 <b>{suggestion.shantenAfter}</b> ·
+              有效进张 <b>{suggestion.effectiveCount}</b> 张 / {suggestion.effectiveTiles.length} 种
+              {typeof suggestion.probability === 'number' && (
+                <span className="ml-1 text-emerald-700">· 摸进概率 <b>{(suggestion.probability * 100).toFixed(1)}%</b></span>
+              )}
+            </span>
+          </>
+        )}
+        {isEv && typeof suggestion.expectedScore === 'number' && (
+          <span className="pill bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs">
+            综合 {suggestion.expectedScore.toFixed(2)}
+          </span>
+        )}
+        {isEv && typeof suggestion.speedScore === 'number' && (
+          <span
+            className="pill bg-sky-50 text-sky-700 border border-sky-200 text-xs"
+            title="下叫速度：能多快下叫 + 听张数；越高表示越快胡"
+          >
+            下叫速度 {suggestion.speedScore.toFixed(2)}
+          </span>
+        )}
+        {isEv && typeof suggestion.valueScore === 'number' && (
+          <span
+            className="pill bg-violet-50 text-violet-700 border border-violet-200 text-xs"
+            title="考量番数：保留根/暗刻、清一色/七对潜力 - 拆根/拆暗刻代价；越高胡牌时番数越大"
+          >
+            考量番数 {suggestion.valueScore.toFixed(2)}
+          </span>
+        )}
+        {isEv && typeof suggestion.averageFan === 'number' && suggestion.averageFan > 0 && (
+          <span className="pill bg-sage-50 text-sage-700 border border-sage-200 text-xs">
+            平均 {suggestion.averageFan.toFixed(1)} 番
+          </span>
+        )}
+        {isEv && typeof suggestion.maxFanPotential === 'number' && suggestion.maxFanPotential > 0 && (
+          <span className="pill bg-sage-50 text-sage-700 border border-sage-200 text-xs">
+            最高 {suggestion.maxFanPotential} 番
+          </span>
+        )}
+        {typeof suggestion.lostGen === 'number' && suggestion.lostGen > 0 && (
+          <span className="pill bg-red-50 text-red-700 border border-red-200 text-xs">
+            拆根 ×{suggestion.lostGen}
+          </span>
+        )}
+        {typeof suggestion.lostTriplets === 'number' && suggestion.lostTriplets > 0 && (
+          <span className="pill bg-orange-50 text-orange-700 border border-orange-200 text-xs">
+            拆暗刻 ×{suggestion.lostTriplets}
+          </span>
+        )}
+        {typeof suggestion.preservedGen === 'number' && suggestion.preservedGen > 0 && (
+          <span className="pill bg-amber-50 text-amber-700 border border-amber-200 text-xs">
+            保留根 ×{suggestion.preservedGen}
+          </span>
+        )}
+        {typeof suggestion.preservedTriplets === 'number' && suggestion.preservedTriplets > 0 && (
+          <span className="pill bg-amber-50 text-amber-700 border border-amber-200 text-xs">
+            保留暗刻 ×{suggestion.preservedTriplets}
+          </span>
+        )}
       </div>
+      {suggestion.reasons && suggestion.reasons.length > 0 && (
+        <ul className="mt-2 text-xs text-sage-600 space-y-0.5 pl-1">
+          {suggestion.reasons.map((r, i) => (
+            <li key={i}>· {r}</li>
+          ))}
+        </ul>
+      )}
       <div className="progress-track mt-2">
         <div className="progress-fill" style={{ width: `${widthPct}%` }} />
       </div>
@@ -679,4 +854,248 @@ function fileToDataUrl(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+// =============== 开局助手：定缺 / 换三张 / 碰决策 ===============
+
+function OpeningAssistant({
+  hand,
+  melds,
+  visible
+}: {
+  hand: string[];
+  melds: { type: 'pung' | 'kong'; tile: string }[];
+  visible: Record<string, number>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<'dingque' | 'swap3' | 'pong'>('dingque');
+  const [pongTarget, setPongTarget] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const fetchStrategy = async (mode: 'dingque' | 'swap3' | 'pong', extra?: any) => {
+    if (hand.length === 0) {
+      setErr('请先输入手牌');
+      return;
+    }
+    setLoading(true);
+    setErr(null);
+    setResult(null);
+    try {
+      const visibleCodes: string[] = [];
+      for (const [k, v] of Object.entries(visible)) for (let i = 0; i < v; i++) visibleCodes.push(k);
+      const res = await fetch('/api/strategy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode, handCodes: hand, visibleCodes, melds, ...(extra ?? {}) })
+      });
+      const data = await res.json();
+      if (!data.ok) setErr(data.error ?? '请求失败');
+      else setResult(data.result);
+    } catch (e: any) {
+      setErr(e?.message ?? '请求失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <section className="glass-card p-5 md:p-6 mt-6">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h2 className="text-lg font-semibold text-sage-800">🎲 开局/中盘助手</h2>
+        <button onClick={() => setOpen(!open)} className="btn-ghost text-xs">
+          {open ? '收起 ▲' : '展开 ▼'}
+        </button>
+      </div>
+      {open && (
+        <div className="mt-3">
+          <div className="flex gap-2 mb-3 flex-wrap">
+            {[
+              { k: 'dingque', label: '🌿 定缺建议' },
+              { k: 'swap3', label: '🔄 换三张策略' },
+              { k: 'pong', label: '🤝 是否碰' }
+            ].map(t => (
+              <button
+                key={t.k}
+                onClick={() => {
+                  setTab(t.k as any);
+                  setResult(null);
+                  setErr(null);
+                }}
+                className={`px-3 py-1.5 rounded-xl text-sm border transition ${
+                  tab === t.k
+                    ? 'bg-sage-500 text-white border-sage-500'
+                    : 'bg-white text-sage-700 border-sage-200 hover:bg-sage-50'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {tab === 'dingque' && (
+            <div>
+              <p className="text-xs text-sage-600 mb-2">
+                开局阶段必选缺一门：枚举 m / s / p 三种方案，比较 "要打掉张数 + 剩余两门向听 - 暗刻/对子奖励"。
+              </p>
+              <button onClick={() => fetchStrategy('dingque')} disabled={loading} className="btn-primary text-sm">
+                {loading ? '分析中…' : '生成建议'}
+              </button>
+            </div>
+          )}
+
+          {tab === 'swap3' && (
+            <div>
+              <p className="text-xs text-sage-600 mb-2">
+                换三张：从手中选 3 张同色牌换出，倾向丢边张/幺九，最大化"换出后的剩余手牌质量"。
+              </p>
+              <button onClick={() => fetchStrategy('swap3')} disabled={loading} className="btn-primary text-sm">
+                {loading ? '分析中…' : '生成建议'}
+              </button>
+            </div>
+          )}
+
+          {tab === 'pong' && (
+            <div>
+              <p className="text-xs text-sage-600 mb-2">
+                别人打出某张牌时，根据手中是否有 ≥ 2 张同点，比较"碰后预期 EV"vs"不碰当前 EV"。
+              </p>
+              <div className="flex items-center gap-2 mb-2 flex-wrap">
+                <span className="text-xs text-sage-700">别人打出的牌：</span>
+                {(['m', 's', 'p'] as const).map(suit => (
+                  <div key={suit} className="flex items-center gap-1">
+                    <span className="label-tag text-xs">
+                      {suit === 'm' ? '万' : suit === 's' ? '条' : '筒'}
+                    </span>
+                    {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(r => {
+                      const c = `${r}${suit}`;
+                      return (
+                        <MJTile
+                          key={c}
+                          code={c}
+                          size="sm"
+                          highlight={pongTarget === c}
+                          onClick={() => setPongTarget(c)}
+                        />
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={() => fetchStrategy('pong', { targetCode: pongTarget })}
+                disabled={loading || !pongTarget}
+                className="btn-primary text-sm"
+              >
+                {loading ? '分析中…' : `分析是否碰 ${pongTarget || '（先选牌）'}`}
+              </button>
+            </div>
+          )}
+
+          {err && (
+            <div className="mt-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              ⚠️ {err}
+            </div>
+          )}
+
+          {result && tab === 'dingque' && (
+            <div className="mt-3 space-y-2">
+              <div className="pill bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs">
+                建议缺：{result.options.find((o: any) => o.suit === result.suggestedDrop)?.suitName}
+              </div>
+              <ul className="text-xs text-sage-600 space-y-0.5 pl-1">
+                {result.reasons.map((r: string, i: number) => (
+                  <li key={i}>· {r}</li>
+                ))}
+              </ul>
+              <div className="grid gap-2 mt-2">
+                {result.options.map((o: any, i: number) => (
+                  <div
+                    key={o.suit}
+                    className={`p-2 rounded-lg border ${
+                      i === 0
+                        ? 'border-emerald-300 bg-emerald-50/50'
+                        : 'border-sage-100 bg-white/50'
+                    }`}
+                  >
+                    <div className="text-sm font-semibold text-sage-700">
+                      缺{o.suitName} （成本 {o.cost.toFixed(1)}）
+                    </div>
+                    <div className="text-xs text-sage-600">
+                      该门 {o.tilesInSuit} 张 · 剩两门向听 {o.shantenAfter}
+                      {o.hasTriplets && ' · 含暗刻'}
+                      {o.hasPairs > 0 && ` · ${o.hasPairs} 对`}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {result && tab === 'swap3' && Array.isArray(result) && (
+            <div className="mt-3 space-y-2">
+              {result.length === 0 ? (
+                <div className="text-xs text-sage-500">没有合适的换三张方案</div>
+              ) : (
+                result.map((opt: any, i: number) => (
+                  <div
+                    key={i}
+                    className={`p-2 rounded-lg border ${
+                      i === 0
+                        ? 'border-emerald-300 bg-emerald-50/50'
+                        : 'border-sage-100 bg-white/50'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="pill bg-emerald-500 text-white text-xs">#{i + 1}</span>
+                      <span className="text-xs text-sage-600">换出：</span>
+                      {opt.swapOut.map((t: any) => (
+                        <div key={t.code} className="flex items-center gap-0.5">
+                          {Array.from({ length: t.count }).map((_, k) => (
+                            <MJTile key={k} code={t.code} size="sm" />
+                          ))}
+                        </div>
+                      ))}
+                      <span className="text-xs text-sage-700">
+                        换出后向听 <b>{opt.expectedShantenAfter}</b>
+                      </span>
+                    </div>
+                    <ul className="text-xs text-sage-600 mt-1 pl-1">
+                      {opt.reasons.map((r: string, j: number) => (
+                        <li key={j}>· {r}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {result && tab === 'pong' && (
+            <div className="mt-3 p-3 rounded-lg border border-sage-100 bg-white/50">
+              <div
+                className={`pill text-xs ${
+                  result.shouldPong
+                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                    : 'bg-amber-50 text-amber-800 border border-amber-300'
+                }`}
+              >
+                {result.shouldPong ? '✅ 建议碰' : '⏸️ 建议不碰'}
+              </div>
+              <div className="text-xs text-sage-700 mt-2">
+                碰后 EV：<b>{result.evWithPong.toFixed(2)}</b> · 不碰 EV：
+                <b>{result.evWithoutPong.toFixed(2)}</b>
+              </div>
+              <ul className="text-xs text-sage-600 mt-1 pl-1">
+                {result.reasons.map((r: string, i: number) => (
+                  <li key={i}>· {r}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
 }

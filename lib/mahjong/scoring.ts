@@ -1,92 +1,119 @@
 /**
- * 四川麻将番种与分数结算
+ * 四川麻将番种与分数结算（重构版）
  *
- * 用户给定的番种：
- *  - 大对子（对对胡）：4 刻 + 1 将        1 番
- *  - 清一色：胡牌牌只含一门花色          2 番
- *  - 七对：7 个对子                      2 番
- *  - 龙七对：含至少 1 组 4 张相同的七对    3 番（覆盖七对）
- *  - 金钩钓：所有面子已碰/杠（meld=4），独钓将 2 番
- *  - 海底捞月：最后一张牌胡（用户勾选）    1 番
- *  - 根：每出现 4 张相同（非龙七对那一根）  按"加番/加底"两种模式之一计入
- *      · 加番模式：每根 +1 番
- *      · 加底模式：番数不变，结算时多加 1 个底
- *
- * 备注：自摸不在用户给的列表里，这里仅作可选附加（默认不加），方便后续扩展。
+ * 重要修正：
+ * 1. computeFan 明确区分 concealed / melds / fullHand / winningTile / winMethod
+ * 2. 金钩钓基于结构（4 副明刻/杠 + 单吊对子），而不是 fullHand 的总张数
+ * 3. 根的统计明确包含：手中 4 张 / 暗杠 / 明杠
+ * 4. 龙七对的"4 张那一组"不再额外算根（已在番种里体现）
  */
 
-import { CountArray, TILE_KIND_COUNT, suitOfIndex, indexToCode } from './tiles';
+import { CountArray, TILE_KIND_COUNT, suitOfIndex, indexToCode, codeToIndex } from './tiles';
 
-export type GenMode = 'fan' | 'di'; // 根的结算模式：加番 / 加底
+export type GenMode = 'fan' | 'di';
+export type WinMethod = 'discard' | 'tsumo';
+
+export interface MeldInfo {
+  type: 'pung' | 'kong'; // pung=碰（明刻），kong=明杠/暗杠（如需区分见 isConcealed）
+  tile: string;
+  isConcealed?: boolean; // 暗杠
+}
 
 export interface FanContext {
-  hand: CountArray; // 胡牌后的全部手牌（含刚胡的那张），共 14 张或 14-3*meld
-  meldCount: number; // 已碰/杠面子数
-  kongTiles?: CountArray; // 暗杠+明杠的具体牌（用于"根"判断），可选
-  isHaidi?: boolean; // 海底捞月
-  isTsumo?: boolean; // 自摸（保留接口）
+  /** 仅手中持牌（含刚胡的那张），不包含已碰/杠 */
+  concealed: CountArray;
+  /** 已碰/杠的具体面子 */
+  melds: MeldInfo[];
+  /** concealed + melds 的合并视图，用于番种判断（清一色等） */
+  fullHand: CountArray;
+  /** 胡到的那张牌 code（可选，用于扩展） */
+  winningTile?: string;
+  /** 自摸 / 点炮 */
+  winMethod?: WinMethod;
+  isHaidi?: boolean;
+  /** 杠上花：杠完后从牌墙补的牌直接胡（自摸） */
+  isAfterKong?: boolean;
+  /** 杠上炮：刚杠完后打出的牌被别人胡（点炮方加 1 番） */
+  isKongDischarge?: boolean;
+  /** 抢杠胡：别人补杠的牌正是自己胡的牌 */
+  isRobKong?: boolean;
   genMode: GenMode;
 }
 
 export interface FanResult {
-  fans: { name: string; value: number }[]; // 番种与该番种的"番数"或"加底数"
-  totalFan: number; // 总番数
-  extraDi: number; // 加底数（加底模式下的根）
+  fans: { name: string; value: number }[];
+  totalFan: number;
+  extraDi: number;
   description: string;
+  /** 估算到的"根"数 */
+  genCount: number;
 }
 
-// =============== 番种判定 ===============
+// =============== 番种判定（基于 concealed + melds 的明确结构） ===============
 
-function isAllPungs(hand: CountArray, meldCount: number): boolean {
-  // 14 张 = 4 面子 + 将；含 meld 时手牌减 3*meld
-  // 用最简单的判定：所有未碰/杠的面子都必须是刻子（即手牌内不能有顺子分解使得有顺子被采用）
-  // 直接检查：移除某个对子作将，剩余每张能否全部 3 张一组
-  for (let i = 0; i < TILE_KIND_COUNT; i++) {
-    if (hand[i] >= 2) {
-      const c = hand.slice();
-      c[i] -= 2;
-      let ok = true;
-      for (let j = 0; j < TILE_KIND_COUNT; j++) {
-        if (c[j] !== 0 && c[j] !== 3 && c[j] !== 4) {
-          ok = false;
-          break;
-        }
-      }
-      if (!ok) continue;
-      // 4 张相同的处理：若刚好凑刻子+1张多余，不行；这里要求 c[j] ∈ {0,3}
-      // 但 c[j] = 4 在加上 kong 的 meld 时存在；普通胡牌后手中如果 c[j] = 4，则不可能纯刻
-      let ok2 = true;
-      for (let j = 0; j < TILE_KIND_COUNT; j++) {
-        if (c[j] !== 0 && c[j] !== 3) {
-          ok2 = false;
-          break;
-        }
-      }
-      if (ok2) return true;
-    }
+/**
+ * 大对子（对对胡）：所有面子都是刻/杠（明或暗）+ 1 对将
+ * 必须验证 concealed 部分能拆出 (4-meldCount-?) 个刻子 + 1 对将；同时 melds 全为 pung/kong
+ */
+function isAllPungs(concealed: CountArray, melds: MeldInfo[]): boolean {
+  // melds 全部是 pung 或 kong（没有顺子，因为四川麻将不能吃）
+  for (const m of melds) {
+    if (m.type !== 'pung' && m.type !== 'kong') return false;
   }
-  return false;
+  const meldCount = melds.length;
+  // concealed 必须能 = (4-meldCount) 个刻子 + 1 对将
+  // 简化：concealed 中每个非零的牌张数必须是 ∈ {0, 2, 3, 4}
+  // 且恰好有一种 ∈ {2, 4} 的将候选；其余 ∈ {3, 4} 是刻
+  for (let i = 0; i < TILE_KIND_COUNT; i++) {
+    if (concealed[i] === 1) return false;
+  }
+  // 找将
+  let pairFoundAt = -1;
+  let pungCount = 0;
+  for (let i = 0; i < TILE_KIND_COUNT; i++) {
+    const v = concealed[i];
+    if (v === 0) continue;
+    if (v === 2 || v === 4) {
+      // 4 既能算"刻 + 多 1 张"也不行；但若是大对子，4 在 concealed 里只能解释为"暗杠等同刻"
+      // 标准做法：concealed 中的 4 张视为暗杠刻（值仍参与对对胡）
+      if (v === 2 && pairFoundAt < 0) {
+        pairFoundAt = i;
+        continue;
+      }
+      // 4 张视为暗刻
+      pungCount++;
+      continue;
+    }
+    if (v === 3) {
+      pungCount++;
+      continue;
+    }
+    return false;
+  }
+  if (pairFoundAt < 0) return false;
+  if (pungCount + meldCount !== 4) return false;
+  return true;
 }
 
-function isQingyise(hand: CountArray): boolean {
+function isQingyise(fullHand: CountArray): boolean {
   let used: Set<0 | 1 | 2> = new Set();
   for (let i = 0; i < TILE_KIND_COUNT; i++) {
-    if (hand[i] > 0) used.add(suitOfIndex(i));
+    if (fullHand[i] > 0) used.add(suitOfIndex(i));
     if (used.size > 1) return false;
   }
   return used.size === 1;
 }
 
-function chitoitsuInfo(hand: CountArray): { isQiDui: boolean; isLongQiDui: boolean; quads: number } {
-  // 14 张全在手中且 meld=0 时才有意义
+function chitoitsuInfo(concealed: CountArray, meldCount: number): { isQiDui: boolean; isLongQiDui: boolean; quads: number } {
+  if (meldCount !== 0) return { isQiDui: false, isLongQiDui: false, quads: 0 };
   let pairs = 0;
   let quads = 0;
   for (let i = 0; i < TILE_KIND_COUNT; i++) {
-    if (hand[i] === 2) pairs++;
-    else if (hand[i] === 4) {
+    if (concealed[i] === 2) pairs++;
+    else if (concealed[i] === 4) {
       pairs += 2;
       quads++;
-    } else if (hand[i] !== 0) {
+    } else if (concealed[i] !== 0) {
       return { isQiDui: false, isLongQiDui: false, quads: 0 };
     }
   }
@@ -94,25 +121,39 @@ function chitoitsuInfo(hand: CountArray): { isQiDui: boolean; isLongQiDui: boole
   return { isQiDui: true, isLongQiDui: quads >= 1, quads };
 }
 
-function isJinGouDiao(hand: CountArray, meldCount: number): boolean {
-  // 金钩钓：所有面子靠碰/杠完成（meldCount === 4），手牌只剩 2 张（独钓将）
-  if (meldCount !== 4) return false;
-  let handCount = 0;
-  for (let i = 0; i < TILE_KIND_COUNT; i++) handCount += hand[i];
-  return handCount === 2;
+/**
+ * 金钩钓：4 副明刻/杠 + 单吊对子
+ * 基于结构：melds.length === 4 且全为 pung/kong；concealed 总数 === 2 且只有一对
+ */
+function isJinGouDiao(concealed: CountArray, melds: MeldInfo[]): boolean {
+  if (melds.length !== 4) return false;
+  for (const m of melds) {
+    if (m.type !== 'pung' && m.type !== 'kong') return false;
+  }
+  let concealedTotal = 0;
+  let pairCount = 0;
+  let nonPair = 0;
+  for (let i = 0; i < TILE_KIND_COUNT; i++) {
+    concealedTotal += concealed[i];
+    if (concealed[i] === 2) pairCount++;
+    else if (concealed[i] !== 0) nonPair++;
+  }
+  return concealedTotal === 2 && pairCount === 1 && nonPair === 0;
 }
 
-// 根的张数：手牌内每个出现 4 张相同 + 杠的张数
-function countGen(hand: CountArray, kongTiles?: CountArray): number {
+/**
+ * 根的统计：
+ * - concealed 中 4 张相同（暗刻 4 张，未杠）→ 1 根
+ * - 暗杠 / 明杠（melds 中的 kong）→ 1 根
+ * - 注意：concealed 中已经被杠走的牌不再出现，所以不会双计
+ */
+function countGen(concealed: CountArray, melds: MeldInfo[]): number {
   let g = 0;
   for (let i = 0; i < TILE_KIND_COUNT; i++) {
-    if (hand[i] === 4) g++;
+    if (concealed[i] === 4) g++;
   }
-  if (kongTiles) {
-    for (let i = 0; i < TILE_KIND_COUNT; i++) {
-      if (kongTiles[i] >= 4) g++;
-      // 若杠的牌在手中又凑成 4 张，理论上不可能（已被杠走），所以不重复计
-    }
+  for (const m of melds) {
+    if (m.type === 'kong') g++;
   }
   return g;
 }
@@ -120,43 +161,43 @@ function countGen(hand: CountArray, kongTiles?: CountArray): number {
 // =============== 综合计算 ===============
 
 export function computeFan(ctx: FanContext): FanResult {
-  const { hand, meldCount, kongTiles, isHaidi, isTsumo, genMode } = ctx;
+  const { concealed, melds, fullHand, isHaidi, winMethod, genMode, isAfterKong, isKongDischarge, isRobKong } = ctx;
+  const meldCount = melds.length;
   const fans: { name: string; value: number }[] = [];
 
-  // 七对 / 龙七对（仅 meld=0 时有意义）
+  // 七对 / 龙七对
   let isQiDui = false;
   let isLong = false;
-  let qiDuiQuads = 0;
   if (meldCount === 0) {
-    const info = chitoitsuInfo(hand);
+    const info = chitoitsuInfo(concealed, meldCount);
     isQiDui = info.isQiDui;
     isLong = info.isLongQiDui;
-    qiDuiQuads = info.quads;
   }
 
   // 大对子
   let isAllPung = false;
-  if (!isQiDui) isAllPung = isAllPungs(hand, meldCount);
+  if (!isQiDui) isAllPung = isAllPungs(concealed, melds);
 
-  // 金钩钓（要求大对子前提之一是 meld=4）
-  const jinGou = isJinGouDiao(hand, meldCount);
+  // 金钩钓（4 副明刻/杠 + 单吊对子）
+  const jinGou = isJinGouDiao(concealed, melds);
 
-  // 清一色
-  const qingyise = isQingyise(hand);
+  // 清一色（基于 fullHand 视图）
+  const qingyise = isQingyise(fullHand);
 
-  // 番种登记（不加根）
+  // 番种登记
   if (isLong) fans.push({ name: '龙七对', value: 3 });
   else if (isQiDui) fans.push({ name: '七对', value: 2 });
   if (isAllPung) fans.push({ name: '大对子', value: 1 });
   if (qingyise) fans.push({ name: '清一色', value: 2 });
   if (jinGou) fans.push({ name: '金钩钓', value: 2 });
   if (isHaidi) fans.push({ name: '海底捞月', value: 1 });
-  if (isTsumo) fans.push({ name: '自摸', value: 1 });
+  if (winMethod === 'tsumo') fans.push({ name: '自摸', value: 1 });
+  if (isAfterKong) fans.push({ name: '杠上花', value: 2 });
+  if (isKongDischarge) fans.push({ name: '杠上炮', value: 1 });
+  if (isRobKong) fans.push({ name: '抢杠胡', value: 1 });
 
-  // 根：每个 4 张相同记 1 根
-  // 龙七对中那个/那些 4 张已经体现在"龙七对"番种里，按四川一般规则：龙七对里多出来的 4 张不再额外算根
-  // 这里的策略：若是龙七对，则减去 1 个根（最少的），其他四张仍算根
-  let genCount = countGen(hand, kongTiles);
+  // 根
+  let genCount = countGen(concealed, melds);
   if (isLong) genCount = Math.max(0, genCount - 1);
 
   let extraDi = 0;
@@ -170,10 +211,9 @@ export function computeFan(ctx: FanContext): FanResult {
   }
 
   const totalFan = fans.reduce((s, f) => s + f.value, 0);
-
   const desc = describeFan({ totalFan, extraDi, genMode, fans, genCount });
 
-  return { fans, totalFan, extraDi, description: desc };
+  return { fans, totalFan, extraDi, description: desc, genCount };
 }
 
 function describeFan({
@@ -189,21 +229,32 @@ function describeFan({
   fans: { name: string; value: number }[];
   genCount: number;
 }): string {
-  // 标准结算：番数 → 番倍（每番翻倍），含底分；玩家可在 UI 设置底分
-  // 这里只描述结构
   const parts: string[] = [];
   parts.push(`合计 ${totalFan} 番`);
   if (genMode === 'di' && genCount > 0) parts.push(`+ ${extraDi} 个加底`);
   return parts.join(' ');
 }
 
-// 简单结算：base * 2^totalFan + (extraDi * base when 加底)
-// 多数四川玩法：1 番 = 1×底，2 番 = 2×底，3 番 = 4×底（番翻倍），上限通常 4-5 番封顶
 export function settle(base: number, fan: FanResult, fanCap = 4): { perPlayer: number; detail: string } {
   const cappedFan = Math.min(fan.totalFan, fanCap);
-  // 番数 -> 倍数：1 番=1，2 番=2，3 番=4，4 番=8 ...（即 2^(n-1)，0 番=1）
   const mul = cappedFan <= 0 ? 1 : Math.pow(2, cappedFan - 1);
   const perPlayer = base * mul + base * fan.extraDi;
   const detail = `底分 ${base} × 2^(${cappedFan}-1) + 加底 ${fan.extraDi}×${base} = ${perPlayer}`;
   return { perPlayer, detail };
+}
+
+// =============== 兼容旧 API ===============
+//
+// 旧版 computeFan 接收 { hand, meldCount, kongTiles, ... }
+// 新版要求 { concealed, melds, fullHand, ... }
+// 这里保留一个 helper：从 concealed + melds 构建 fullHand
+
+export function buildFullHand(concealed: CountArray, melds: MeldInfo[]): CountArray {
+  const full = concealed.slice();
+  for (const m of melds) {
+    const idx = codeToIndex(m.tile);
+    if (idx === null) continue;
+    full[idx] += m.type === 'kong' ? 4 : 3;
+  }
+  return full;
 }

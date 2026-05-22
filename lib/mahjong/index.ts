@@ -1,6 +1,12 @@
 /**
- * 顶层分析入口：根据玩家手牌（含/不含刚摸的牌）+ 已知出过的牌
- * 返回完整的判断结果。
+ * 顶层分析入口（重构版）
+ *
+ * 主要变化：
+ * 1. 新增 objective: 'expectedScore' | 'speed'。expectedScore 是新默认推荐
+ * 2. analyze() 返回结构包含 ok / error 字段，输入非法时返回 { ok: false, error }
+ * 3. melds 参与缺一门判断；金钩钓基于结构识别
+ * 4. shantenAfter === 0 时使用严格听牌枚举，不再出现"听牌但 effectiveTiles=空"
+ * 5. 同时返回 EV 排序和速度排序两套结果（speedSuggestions 字段）
  */
 
 import {
@@ -8,68 +14,186 @@ import {
   countsFromCodes,
   emptyCounts,
   totalTiles,
-  tileDisplay,
-  indexToCode
+  indexToCode,
+  codeToIndex
 } from './tiles';
 import {
   calcShanten,
   isWinningHand,
-  enumerateWaitingTiles,
-  suggestDiscards,
-  defaultRemainingPool,
+  isStandardWinningHand,
+  isSevenPairsWinningHand,
+  isLongChitoitsuWinningHand,
+  enumerateWaitingTilesStrict,
   isMissingOneSuit,
   WaitingTile,
-  DiscardSuggestion,
-  ShantenResult
+  ShantenResult,
+  MeldDecl
 } from './analyzer';
-import { computeFan, settle, GenMode, FanResult } from './scoring';
+import {
+  computeFan,
+  buildFullHand,
+  GenMode,
+  FanResult,
+  MeldInfo,
+  settle
+} from './scoring';
+import {
+  suggestDiscardsByEv,
+  suggestDiscardsBySpeed,
+  EvDiscardSuggestion
+} from './ev';
+
+export {
+  isStandardWinningHand,
+  isSevenPairsWinningHand,
+  isLongChitoitsuWinningHand,
+  isWinningHand,
+  enumerateWaitingTilesStrict,
+  calcShanten
+};
+export type { ShantenResult, WaitingTile, MeldDecl } from './analyzer';
+export type { GenMode, FanResult, MeldInfo } from './scoring';
+export type { EvDiscardSuggestion } from './ev';
 
 export type Phase = 'win' | 'tenpai' | 'noten';
+export type Objective = 'expectedScore' | 'speed';
 
 export interface AnalysisInput {
-  handCodes: string[]; // 手牌（不含已碰/杠的牌；可含刚摸的牌）
-  visibleCodes?: string[]; // 已知打出/可见的牌（用于估算剩余张数）
-  meldCount?: number; // 兼容旧字段：已碰/杠的副数（不含具体牌）
-  melds?: { type: 'pung' | 'kong'; tile: string }[]; // 推荐用法：已碰/杠的具体牌
-  isHaidi?: boolean; // 海底捞月
-  genMode?: GenMode; // 根：加番 / 加底
-  baseScore?: number; // 底分（用于结算）
-  fanCap?: number; // 番数封顶
+  handCodes: string[];
+  visibleCodes?: string[];
+  meldCount?: number;
+  melds?: MeldDecl[];
+  isHaidi?: boolean;
+  /** 杠上花：杠完后从牌墙补的牌直接胡 */
+  isAfterKong?: boolean;
+  /** 杠上炮：刚杠完后打出的牌被别人胡 */
+  isKongDischarge?: boolean;
+  /** 抢杠胡：别人补杠的牌正是自己胡的牌 */
+  isRobKong?: boolean;
+  genMode?: GenMode;
+  baseScore?: number;
+  fanCap?: number;
+  /** 出牌建议优化目标：默认 expectedScore（综合 EV） */
+  objective?: Objective;
 }
 
-export interface WinAnalysis {
+export interface AnalysisResultPayload {
+  ok: true;
   phase: Phase;
   shanten: ShantenResult;
   isWin: boolean;
-  waitingTiles?: (WaitingTile & { remaining: number; fan?: number })[]; // 听牌情形（带每张胡牌的番数预估）
-  suggestedDiscards?: DiscardSuggestion[]; // 未听情形：建议出牌
+  waitingTiles?: (WaitingTile & { remaining: number; fan?: number })[];
+  /** 主推荐（按 objective 决定排序） */
+  suggestedDiscards?: EvDiscardSuggestion[];
+  /** 备选：另一种排序结果（speed 模式作为参考） */
+  speedSuggestions?: EvDiscardSuggestion[];
+  evSuggestions?: EvDiscardSuggestion[];
+  objective: Objective;
   warnings: string[];
-  handSummary: string; // 手牌摘要
-  remainingPoolHint?: { code: string; remaining: number }[]; // 关键牌剩余
-  fan?: FanResult; // 已胡牌时的番数明细
+  handSummary: string;
+  remainingPoolHint?: { code: string; remaining: number }[];
+  fan?: FanResult;
   settlement?: { perPlayer: number; detail: string };
 }
 
+export interface AnalysisErrorPayload {
+  ok: false;
+  error: string;
+  warnings?: string[];
+}
+
+export type WinAnalysis = AnalysisResultPayload | AnalysisErrorPayload;
+
+// ============== 输入校验 ==============
+
+const VALID_TILE = /^[1-9][msp]$/;
+
+function validateInput(input: AnalysisInput): string | null {
+  if (!Array.isArray(input.handCodes)) return '非法手牌：handCodes 必须是数组';
+  // 1. 校验每张牌的格式
+  for (const c of input.handCodes) {
+    if (typeof c !== 'string' || !VALID_TILE.test(c)) {
+      return `非法手牌：${c} 不是合法的牌码（应为 1m..9p）`;
+    }
+  }
+  if (input.handCodes.length > 14) {
+    return `非法手牌：手牌不能超过 14 张（实际 ${input.handCodes.length} 张）`;
+  }
+  // 2. 校验每种牌不能超过 4 张
+  const counts: Record<string, number> = {};
+  for (const c of input.handCodes) counts[c] = (counts[c] ?? 0) + 1;
+  for (const [code, n] of Object.entries(counts)) {
+    if (n > 4) return `非法手牌：${code} 超过4张（实际 ${n} 张）`;
+  }
+  // 3. melds 校验
+  if (input.melds !== undefined) {
+    if (!Array.isArray(input.melds)) return '非法 melds：必须是数组';
+    if (input.melds.length > 4) return '非法 melds：最多 4 副';
+    for (const m of input.melds) {
+      if (!m || typeof m !== 'object') return '非法 melds：元素格式错误';
+      if (m.type !== 'pung' && m.type !== 'kong') return `非法 melds：type 必须是 pung 或 kong（实际 ${m.type}）`;
+      if (typeof m.tile !== 'string' || !VALID_TILE.test(m.tile)) {
+        return `非法 melds：tile ${m.tile} 不是合法牌码`;
+      }
+    }
+  }
+  // 4. melds + hand 中每种牌总数校验
+  const totalCounts: Record<string, number> = { ...counts };
+  for (const m of input.melds ?? []) {
+    totalCounts[m.tile] = (totalCounts[m.tile] ?? 0) + (m.type === 'kong' ? 4 : 3);
+    if (totalCounts[m.tile] > 4) return `非法手牌：${m.tile} 加上 melds 后超过4张`;
+  }
+  // 5. baseScore / fanCap 校验
+  if (input.baseScore !== undefined) {
+    if (typeof input.baseScore !== 'number' || !isFinite(input.baseScore) || input.baseScore <= 0) {
+      return `非法 baseScore：必须是正数（实际 ${input.baseScore}）`;
+    }
+  }
+  if (input.fanCap !== undefined) {
+    if (typeof input.fanCap !== 'number' || !isFinite(input.fanCap) || input.fanCap < 0 || !Number.isInteger(input.fanCap)) {
+      return `非法 fanCap：必须是非负整数（实际 ${input.fanCap}）`;
+    }
+  }
+  // 6. 总张数校验：hand + melds*3 = 13 或 14
+  const meldUnits = (input.melds ?? []).length;
+  const total = input.handCodes.length + meldUnits * 3;
+  if (input.handCodes.length > 0 && total !== 13 && total !== 14 && total > 0) {
+    // 允许部分输入（用户还在拼牌），仅警告而不拒绝；交给上层处理
+    // 此处不返回错误
+  }
+  return null;
+}
+
 export function analyze(input: AnalysisInput): WinAnalysis {
+  // ===== 输入校验 =====
+  const err = validateInput(input);
+  if (err) {
+    return { ok: false, error: err };
+  }
+
   const warnings: string[] = [];
   const hand = countsFromCodes(input.handCodes);
   const visible = countsFromCodes(input.visibleCodes ?? []);
-  const melds = input.melds ?? [];
+  const melds: MeldDecl[] = input.melds ?? [];
   const meldCount = melds.length > 0 ? melds.length : (input.meldCount ?? 0);
+  const meldInfos: MeldInfo[] = melds.map(m => ({ type: m.type, tile: m.tile }));
   const genMode = input.genMode ?? 'fan';
   const baseScore = input.baseScore ?? 1;
   const fanCap = input.fanCap ?? 4;
   const isHaidi = input.isHaidi ?? false;
+  const isAfterKong = input.isAfterKong ?? false;
+  const isKongDischarge = input.isKongDischarge ?? false;
+  const isRobKong = input.isRobKong ?? false;
+  const objective: Objective = input.objective ?? 'expectedScore';
 
-  // 已碰/杠的牌必须从牌池中扣除
+  // 已碰/杠的牌从牌池扣除
   const meldTiles = emptyCounts();
   for (const m of melds) {
-    const idx = parseInt(m.tile[0]) - 1 + (m.tile[1] === 'm' ? 0 : m.tile[1] === 's' ? 9 : 18);
-    if (idx >= 0 && idx < 27) {
-      meldTiles[idx] += m.type === 'kong' ? 4 : 3;
-    }
+    const idx = codeToIndex(m.tile);
+    if (idx === null || idx < 0 || idx >= 27) continue;
+    meldTiles[idx] += m.type === 'kong' ? 4 : 3;
   }
-  // 用于番种判断的"完整牌型"：手牌 + 已碰/杠的牌
+
   const fullHand = hand.slice();
   for (let i = 0; i < fullHand.length; i++) fullHand[i] += meldTiles[i];
 
@@ -83,153 +207,183 @@ export function analyze(input: AnalysisInput): WinAnalysis {
     );
   }
 
-  if (!isMissingOneSuit(hand)) {
-    warnings.push('手牌涉及三门花色，四川麻将要求胡牌时缺一门，需要打掉其中一门');
+  // 缺一门：必须包含 melds
+  if (!isMissingOneSuit(hand, melds)) {
+    warnings.push('手牌（含明牌）涉及三门花色，四川麻将要求胡牌时缺一门，需要打掉其中一门');
+  }
+
+  // 暗杠提示：concealed 中有 4 张相同 → 强烈建议先暗杠（不影响向听，且 +1 根加番）
+  const concealedKongCandidates: string[] = [];
+  for (let i = 0; i < hand.length; i++) {
+    if (hand[i] === 4) concealedKongCandidates.push(indexToCode(i));
+  }
+  if (concealedKongCandidates.length > 0) {
+    warnings.push(
+      `检测到 ${concealedKongCandidates.length} 组 4 张相同（${concealedKongCandidates.join('、')}），建议优先暗杠：暗杠后向听数不变、加 1 根，且 4 张占位变为面子腾出空间，几乎必然提升 EV。`
+    );
   }
 
   const handSummary = handCodesToHumanReadable(input.handCodes);
 
-  // 计算剩余牌池：从 4 张/种里扣除手牌、可见牌、以及已碰/杠的牌
   const visibleAll = visible.slice();
   for (let i = 0; i < visibleAll.length; i++) visibleAll[i] += meldTiles[i];
   const remainingPool = defaultRemainingPool(hand, visibleAll);
-  const totalUnseen = remainingPool.reduce((a, b) => a + b, 0); // 我看不到的所有牌总数
+  const totalUnseen = remainingPool.reduce((a, b) => a + b, 0);
 
-  // 给每张牌附加剩余张数 + 概率
-  const annotateProb = (effective: { remaining: number }[]) => {
-    const total = effective.reduce((s, e) => s + e.remaining, 0);
-    return totalUnseen > 0 ? total / totalUnseen : 0;
-  };
-
-  // ===== 通用判定：先尝试"加一张是否胡" =====
-  // 这种判法不依赖 shanten 公式，对任意手牌张数都能给出正确听牌结论
-  const directWaits: { index: number; code: string; winType: 'standard' | 'chitoitsu' }[] = [];
-  for (let t = 0; t < 27; t++) {
-    if (hand[t] >= 4) continue;
-    const trial = hand.slice();
-    trial[t]++;
-    if (isWinningHand(trial, meldCount)) {
-      directWaits.push({
-        index: t,
-        code: indexToCode(t),
-        winType: meldCount === 0 && !checkStandardWinDirect(trial) ? 'chitoitsu' : 'standard'
-      });
-    }
-  }
-
-  // 如果当前手牌已经直接胡（14 张 = 14 - meld*3 + meld*3）
-  if (isWinningHand(hand, meldCount)) {
-    const fan = computeFan({ hand: fullHand, meldCount, isHaidi, genMode });
+  // ===== 直接判定胡牌 =====
+  if (handTotal === expectedDrawn && isWinningHand(hand, meldCount, melds)) {
+    const fan = computeFan({
+      concealed: hand,
+      melds: meldInfos,
+      fullHand,
+      winMethod: 'discard',
+      isHaidi,
+      isAfterKong,
+      isKongDischarge,
+      isRobKong,
+      genMode
+    });
     const settlement = settle(baseScore, fan, fanCap);
     return {
+      ok: true,
       phase: 'win',
       shanten: { shanten: -1, type: 'standard' },
       isWin: true,
       warnings,
       handSummary,
-      suggestedDiscards: undefined,
+      objective,
       remainingPoolHint: topPoolHints(remainingPool),
       fan,
       settlement
     };
   }
 
-  // 如果加一张能胡 → 听牌
-  if (directWaits.length > 0) {
-    const waits = directWaits.map(w => {
-      const winFull = fullHand.slice();
-      winFull[w.index]++;
-      const fan = computeFan({ hand: winFull, meldCount, isHaidi, genMode });
+  // ===== 听牌枚举（13 张时） =====
+  if (handTotal === expectedTenpai) {
+    const realWaits = enumerateWaitingTilesStrict(hand, melds);
+    if (realWaits.length > 0) {
+      const waits = realWaits.map(w => {
+        const winFull = fullHand.slice();
+        winFull[w.index]++;
+        const winConcealed = hand.slice();
+        winConcealed[w.index]++;
+        const fan = computeFan({
+          concealed: winConcealed,
+          melds: meldInfos,
+          fullHand: winFull,
+          winningTile: w.code,
+          winMethod: 'discard',
+          isHaidi,
+          isAfterKong,
+          isKongDischarge,
+          isRobKong,
+          genMode
+        });
+        return {
+          ...w,
+          remaining: remainingPool[w.index],
+          fan: fan.totalFan
+        };
+      });
       return {
-        ...w,
-        remaining: remainingPool[w.index],
-        fan: fan.totalFan
+        ok: true,
+        phase: 'tenpai',
+        shanten: { shanten: 0, type: realWaits.some(w => w.winType !== 'standard') ? 'chitoitsu' : 'standard' },
+        isWin: false,
+        waitingTiles: waits,
+        warnings,
+        handSummary,
+        objective,
+        remainingPoolHint: topPoolHints(remainingPool)
       };
-    });
-    return {
-      phase: 'tenpai',
-      shanten: { shanten: 0, type: 'standard' },
-      isWin: false,
-      waitingTiles: waits,
-      warnings,
-      handSummary,
-      remainingPoolHint: topPoolHints(remainingPool)
-    };
+    }
   }
 
   // ===== 14 张待出（已摸） =====
   if (handTotal === expectedDrawn) {
-    const sh = calcShanten(hand, meldCount);
-    const sugg = suggestDiscards(hand, remainingPool, meldCount).slice(0, 8).map(s => ({
-      ...s,
-      probability: totalUnseen > 0 ? s.effectiveCount / totalUnseen : 0
-    }));
+    const evList = suggestDiscardsByEv(hand, {
+      hand,
+      remainingPool,
+      totalUnseen,
+      melds,
+      genMode,
+      fanCap,
+      baseScore
+    });
+    const speedList = suggestDiscardsBySpeed(hand, {
+      hand,
+      remainingPool,
+      totalUnseen,
+      melds,
+      genMode,
+      fanCap,
+      baseScore
+    });
+
+    // 给速度模式的 top1 加上"拆根/降番"提示（如果适用）
+    annotateSpeedRationale(speedList, evList);
+
+    const sh = calcShanten(hand, meldCount, melds);
+    // 完整列表给上层（API/UI 自行 slice），方便测试和"列出所有候选"
+    const main = objective === 'expectedScore' ? evList : speedList;
+
     return {
+      ok: true,
       phase: sh.shanten === 0 ? 'tenpai' : 'noten',
       shanten: sh,
       isWin: false,
-      suggestedDiscards: sugg,
+      suggestedDiscards: main,
+      evSuggestions: evList,
+      speedSuggestions: speedList,
+      objective,
       warnings,
       handSummary,
       remainingPoolHint: topPoolHints(remainingPool)
     };
   }
 
-  // ===== 其他：未听，给进张提示 =====
-  const sh = calcShanten(hand, meldCount);
-  const sugg13 = suggestProgressFromTenpaiMinusOne(hand, remainingPool, meldCount).map(s => ({
-    ...s,
-    probability: totalUnseen > 0 ? s.effectiveCount / totalUnseen : 0
-  }));
+  // ===== 其他张数：未听，给整体进张提示 =====
+  const sh = calcShanten(hand, meldCount, melds);
   return {
+    ok: true,
     phase: 'noten',
     shanten: sh,
     isWin: false,
-    suggestedDiscards: sugg13,
-    warnings: [...warnings, '当前未下叫，参考有效进张提示'],
+    suggestedDiscards: [],
+    objective,
+    warnings: [...warnings, '当前牌数不属于"听牌/待出"标准状态，建议补齐手牌后再分析'],
     handSummary,
     remainingPoolHint: topPoolHints(remainingPool)
   };
 }
 
-// 直接用 isWinningHand 但仅判 14 张全在手里的情形
-function checkStandardWinDirect(c: CountArray): boolean {
-  return isWinningHand(c, 0);
-}
+function annotateSpeedRationale(
+  speedList: EvDiscardSuggestion[],
+  evList: EvDiscardSuggestion[]
+): void {
+  if (speedList.length === 0 || evList.length === 0) return;
+  const speedTop = speedList[0];
+  const evTop = evList[0];
 
-function suggestProgressFromTenpaiMinusOne(
-  hand: CountArray,
-  remainingPool: CountArray,
-  meldCount: number = 0
-): DiscardSuggestion[] {
-  const baseShanten = calcShanten(hand, meldCount).shanten;
-  const eff: { index: number; code: string; remaining: number }[] = [];
-  for (let t = 0; t < 27; t++) {
-    if (hand[t] >= 4) continue;
-    const trial = hand.slice();
-    trial[t]++;
-    const sh = calcShanten(trial, meldCount).shanten;
-    if (sh < baseShanten) {
-      eff.push({
-        index: t,
-        code: indexToCode(t),
-        remaining: Math.max(0, remainingPool[t])
-      });
+  // 如果速度推荐和 EV 推荐不同：在速度推荐里追加"拆根/降番、EV 较低"提示
+  if (speedTop.discardCode !== evTop.discardCode) {
+    if (speedTop.lostGen > 0 && !speedTop.reasons.some(r => r.includes('拆根'))) {
+      speedTop.reasons.push(`拆根 ×${speedTop.lostGen}：虽然进张多，但牺牲了根（番数上限下降）`);
+    }
+    if (speedTop.expectedScore < evTop.expectedScore) {
+      speedTop.reasons.push(`EV 较低：综合期望收益不如打 ${evTop.discardCode}（降番代价大于下叫速度）`);
     }
   }
-  return [
-    {
-      discard: -1,
-      discardCode: '—',
-      shantenAfter: baseShanten,
-      effectiveTiles: eff.sort((a, b) => b.remaining - a.remaining),
-      effectiveCount: eff.reduce((a, b) => a + b.remaining, 0)
-    }
-  ];
+}
+
+function defaultRemainingPool(hand: CountArray, visibleDiscards: CountArray): CountArray {
+  return new Array(27).fill(0).map((_, i) => {
+    const used = hand[i] + (visibleDiscards[i] || 0);
+    return Math.max(0, 4 - used);
+  });
 }
 
 function handCodesToHumanReadable(codes: string[]): string {
-  // 按花色分组排序
   const groups: { m: number[]; s: number[]; p: number[] } = { m: [], s: [], p: [] };
   for (const c of codes) {
     if (c.length !== 2) continue;

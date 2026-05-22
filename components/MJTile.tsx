@@ -17,9 +17,9 @@ export interface MJTileProps {
 }
 
 const SIZES = {
-  sm: { w: 38, h: 52 },
-  md: { w: 50, h: 68 },
-  lg: { w: 66, h: 90 }
+  sm: { w: 38, h: 56 },
+  md: { w: 50, h: 73 },
+  lg: { w: 66, h: 96 }
 } as const;
 
 export function MJTile({ code, size = 'md', removable, dim, highlight, onClick, badge }: MJTileProps) {

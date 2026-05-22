@@ -42,6 +42,14 @@ interface RecognizeResponse {
   error?: string;
 }
 
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8MB（识别接口）
+const MAX_BASE64_LEN = Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 256;
+
+function isValidBase64(s: string): boolean {
+  if (typeof s !== 'string' || s.length === 0) return false;
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(s);
+}
+
 export async function POST(req: NextRequest): Promise<NextResponse<RecognizeResponse>> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -58,8 +66,16 @@ export async function POST(req: NextRequest): Promise<NextResponse<RecognizeResp
     return NextResponse.json({ ok: false, error: '请求体解析失败' }, { status: 400 });
   }
 
-  if (!body.image) {
+  if (!body.image || typeof body.image !== 'string') {
     return NextResponse.json({ ok: false, error: '缺少 image 字段' }, { status: 400 });
+  }
+
+  // 大小限制（保守按字符串长度估算）
+  if (body.image.length > MAX_BASE64_LEN) {
+    return NextResponse.json(
+      { ok: false, error: `图片过大（>${(MAX_IMAGE_BYTES / 1024 / 1024).toFixed(0)}MB），请压缩后重试` },
+      { status: 413 }
+    );
   }
 
   let mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' = 'image/jpeg';
@@ -78,6 +94,10 @@ export async function POST(req: NextRequest): Promise<NextResponse<RecognizeResp
     ) {
       mediaType = body.mediaType as any;
     }
+  }
+
+  if (!isValidBase64(base64)) {
+    return NextResponse.json({ ok: false, error: 'image 不是合法的 base64 字符串' }, { status: 400 });
   }
 
   const baseURL = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/+$/, '');
@@ -149,7 +169,16 @@ export async function POST(req: NextRequest): Promise<NextResponse<RecognizeResp
       );
     }
 
-    const tiles = Array.isArray(parsed.tiles) ? parsed.tiles.filter(isValidTile) : [];
+    const tilesRaw = Array.isArray(parsed.tiles) ? parsed.tiles.filter(isValidTile) : [];
+    // 二次校验：不允许任意一种牌超过 4 张；不允许超过 14 张
+    const counter: Record<string, number> = {};
+    const tiles: string[] = [];
+    for (const t of tilesRaw) {
+      counter[t] = (counter[t] ?? 0) + 1;
+      if (counter[t] > 4) continue; // 静默丢弃多余
+      if (tiles.length >= 14) break;
+      tiles.push(t);
+    }
     return NextResponse.json({
       ok: true,
       tiles,
