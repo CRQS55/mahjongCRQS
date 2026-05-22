@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
       ? Math.floor(body.wallLeft)
       : undefined;
   const genMode = body.genMode === 'di' ? 'di' : 'fan';
+  const winMethod = body.winMethod === 'tsumo' ? 'tsumo' : 'discard';
   const baseScore = typeof body.baseScore === 'number' ? body.baseScore : 1;
   const fanCap = typeof body.fanCap === 'number' ? body.fanCap : 4;
   const objective: Objective =
@@ -45,6 +46,7 @@ export async function POST(req: NextRequest) {
       isEarthly,
       wallLeft,
       genMode,
+      winMethod,
       baseScore,
       fanCap,
       objective

@@ -2,11 +2,18 @@
  * EV（期望收益）出牌评分模型
  *
  * 综合评分：
- *   expectedScore =  胡牌概率 * 平均胡牌得分
- *                  + 查叫价值
- *                  + 高番结构保留奖励
- *                  - 拆根/拆高番结构惩罚
- *                  - 风险惩罚（占位，可扩展）
+ *   expectedScore = speedScore + valueScore
+ *
+ * 听牌阶段（shantenAfter === 0）：
+ *   对每个胡张 t 调用 computeFan + settle(baseScore, fan, fanCap).perPlayer
+ *   winRewardEstimate = Σ remaining(t) * settlement(t).perPlayer / totalUnseen
+ *   不再使用 maxFanPotential 计算听牌收益（averageFan / maxFanPotential / fanDistribution 仅作展示）
+ *
+ * 未听阶段（shantenAfter >= 1）：
+ *   winProbability 用 estimateMultiTurnWinProb 估算
+ *   番数潜力按启发式估算，区分 genMode：
+ *     - genMode='fan'：根计入 estMaxFan（每根 +1 番）
+ *     - genMode='di'：根 NOT 计入 estMaxFan，按 baseScore 加底贡献价值（与 settle 的 extraDi 保持一致）
  *
  * 字段（每个 discard 候选）：
  *   discardCode, shantenAfter, effectiveTiles, effectiveCount
@@ -31,12 +38,15 @@ import {
   isSevenPairsWinningHand,
   isLongChitoitsuWinningHand,
   enumerateWaitingTilesStrict,
+  countPairUnits,
   MeldDecl
 } from './analyzer';
 import {
   computeFan,
   buildFullHand,
+  settle,
   GenMode,
+  WinMethod,
   MeldInfo,
   FanResult
 } from './scoring';
@@ -115,6 +125,8 @@ export interface EvOptions {
   baseScore: number;
   /** 牌墙剩余张数：用于推算自己还能摸几巡（turnsLeft = floor(wallLeft/4)） */
   wallLeft?: number;
+  /** 胡牌方式：影响 fan 计算（自摸 +1 番）。默认 'discard' */
+  winMethod?: WinMethod;
 }
 
 /**
@@ -129,25 +141,29 @@ function countConcealedGen(hand: CountArray): number {
 /**
  * 估算"高番结构潜力"评分（0..1）
  * 仅作为启发式：根据当前结构与目标的距离给出 0..1
+ *
+ * 七对/龙七对潜力使用与 chitoitsuShanten 相同的 pairUnits 口径：
+ *   4 张相同算 2 个 pair units（龙七对核心信号）
  */
 function estimateStructurePotentials(
   after: CountArray,
   meldCount: number,
   melds: MeldDecl[]
 ) {
-  const total = totalTiles(after);
-
-  // 七对潜力：当前对子数 / 7（meld=0 时才有意义）
-  let pairs = 0;
+  // 七对潜力：pairUnits / 7（meld=0 时才有意义）
+  const pairs = countPairUnits(after);
   let kinds = 0;
   let quads = 0;
   for (let i = 0; i < TILE_KIND_COUNT; i++) {
-    if (after[i] >= 2) pairs++;
     if (after[i] >= 1) kinds++;
     if (after[i] === 4) quads++;
   }
   const sevenPairsPotential = meldCount === 0 ? Math.min(1, pairs / 7) : 0;
-  const longSevenPairsPotential = meldCount === 0 ? Math.min(1, (pairs / 7) * (quads >= 1 ? 1 : 0.4)) : 0;
+  // 龙七对：核心是"是否已经有一组 4 张"，再叠加七对结构完整度
+  const longSevenPairsPotential =
+    meldCount === 0
+      ? Math.min(1, (pairs / 7) * (quads >= 1 ? 1 : 0.4))
+      : 0;
 
   // 大对子潜力：手牌中 ∈ {2,3,4} 的占比
   let pungLikeTiles = 0;
@@ -187,8 +203,8 @@ function estimateStructurePotentials(
  *
  * 算法概要：
  * - 算 shanten + effectiveTiles
- * - 若 shanten==0：枚举每个真听张 → 模拟胡牌 → 算 fan → 加权（remaining/totalUnseen）
- * - 若 shanten>=1：用启发式估计（最大潜在 fan、最近一步进张多少能保留多少结构）
+ * - 若 shanten==0：枚举每个真听张 → computeFan → settle().perPlayer → 按 remaining 加权
+ * - 若 shanten>=1：用启发式估算 estMaxFan + winProbability，区分 genMode
  * - 拆根惩罚：与 hand 比较 concealed 4 张数下降则记 lostGen
  */
 export function evaluateDiscard(
@@ -196,9 +212,19 @@ export function evaluateDiscard(
   discardIdx: number,
   opts: EvOptions
 ): EvDiscardSuggestion {
-  const { remainingPool, totalUnseen, melds, genMode, fanCap, baseScore, wallLeft } = opts;
+  const {
+    remainingPool,
+    totalUnseen,
+    melds,
+    genMode,
+    fanCap,
+    baseScore,
+    wallLeft,
+    winMethod
+  } = opts;
   const meldCount = melds.length;
   const turnsLeft = turnsLeftFromWall(wallLeft);
+  const wm: WinMethod = winMethod ?? 'discard';
 
   const after = hand.slice();
   after[discardIdx]--;
@@ -292,10 +318,15 @@ export function evaluateDiscard(
 
   const meldInfos: MeldInfo[] = melds.map(m => ({ type: m.type, tile: m.tile }));
 
+  // 听牌阶段：精确计算每个胡张的 settle().perPlayer，按 remaining 加权
+  // 关键：不再用 winProbability × baseScore × 2^maxFanPotential，
+  //       直接用 settle() 的真实结算金额（fan 模式与 di 模式都正确）
+  let tenpaiWinReward = 0; // Σ remaining(t) * settle.perPlayer / totalUnseen
+
   if (shantenAfter === 0 && effectiveTiles.length > 0) {
-    // 听牌阶段：精确计算每个胡张的 fan
     let totalWeight = 0;
     let weightedFan = 0;
+    let weightedSettle = 0;
     for (const w of effectiveTiles) {
       const winConcealed = after.slice();
       winConcealed[w.index]++;
@@ -305,20 +336,23 @@ export function evaluateDiscard(
         melds: meldInfos,
         fullHand,
         winningTile: w.code,
-        winMethod: 'discard',
+        winMethod: wm,
         genMode
       });
       const cappedFan = Math.min(fan.totalFan, fanCap);
+      const settled = settle(baseScore, fan, fanCap).perPlayer;
       totalWeight += w.remaining;
       weightedFan += w.remaining * cappedFan;
+      weightedSettle += w.remaining * settled;
       maxFanPotential = Math.max(maxFanPotential, cappedFan);
       fanMap.set(cappedFan, (fanMap.get(cappedFan) ?? 0) + w.remaining);
     }
     winProbability = totalUnseen > 0 ? totalWeight / totalUnseen : 0;
     averageFan = totalWeight > 0 ? weightedFan / totalWeight : 0;
+    // 听牌阶段：直接用 settle 的加权 EV，分母是 totalUnseen（与 winProbability 同分母，保持一致性）
+    tenpaiWinReward = totalUnseen > 0 ? weightedSettle / totalUnseen : 0;
   } else {
-    // 未听阶段：使用多步前瞻 DP 估算（参考 pystyle 期待値計算的递归思路）
-    // 不再用粗糙的 stepProb^(shanten+1) × 0.6
+    // 未听阶段：使用多步前瞻 DP 估算
     winProbability = estimateMultiTurnWinProb(shantenAfter, effectiveCount, totalUnseen, turnsLeft);
 
     const pots = estimateStructurePotentials(after, meldCount, melds);
@@ -327,7 +361,11 @@ export function evaluateDiscard(
     else if (pots.sevenPairsPotential > 0.85) estMaxFan = Math.max(estMaxFan, 2);
     if (pots.allPungsPotential > 0.7) estMaxFan = Math.max(estMaxFan, 1);
     if (pots.pureSuitPotential > 0.95) estMaxFan = Math.max(estMaxFan, 2);
-    estMaxFan += preservedGen;
+    // 区分 genMode：fan 模式下根计入 estMaxFan；di 模式下根不计入 estMaxFan（通过加底贡献价值）
+    if (genMode === 'fan') {
+      estMaxFan += preservedGen;
+    }
+    if (wm === 'tsumo') estMaxFan += 1; // 自摸 1 番
     maxFanPotential = Math.min(estMaxFan, fanCap);
     averageFan = maxFanPotential * 0.5;
   }
@@ -335,20 +373,29 @@ export function evaluateDiscard(
   // ===== 高番结构潜力（输出字段） =====
   const pots = estimateStructurePotentials(after, meldCount, melds);
 
-  // ===== 风险惩罚（暂占位，可扩展为放铳风险） =====
+  // ===== 风险惩罚（占位，本项目不实现防守/放铳风险） =====
   const riskPenalty = 0;
 
   // ===== EV 综合计算（两轴拆分）=====
   //
-  // 业内做法（pystyle 期待値計算 / riichi.wiki tile efficiency）：
-  // - 速度（speed）：聴牌確率 × 和了確率，强调当前听张数与下叫概率
-  // - 价值（value）：和了得点 × 番数潜力，强调番数 + 结构保留
-  // 两者权衡：
-  //   听牌阶段速度分应明显高于 1 向听
-  //   双对子结构 / 暗刻保留 / 清一色潜力影响价值分，不该被听张数完全压过
+  // 听牌阶段：
+  //   winRewardEstimate 直接来自 settle 加权（fan/di 模式均自洽）
+  // 未听阶段：
+  //   winRewardEstimate ≈ winProbability × baseScore × 2^estMaxFan
+  //   di 模式下额外加上 preservedGen × baseScore × winProbability（加底贡献）
 
   const fanMultiplier = Math.pow(2, Math.max(0, maxFanPotential));
-  const winRewardEstimate = winProbability * baseScore * fanMultiplier;
+  let winRewardEstimate: number;
+  if (shantenAfter === 0 && effectiveTiles.length > 0) {
+    winRewardEstimate = tenpaiWinReward;
+  } else {
+    let base = winProbability * baseScore * fanMultiplier;
+    if (genMode === 'di' && preservedGen > 0) {
+      // di 模式：根加底，按 settle: perPlayer += base × extraDi
+      base += winProbability * baseScore * preservedGen;
+    }
+    winRewardEstimate = base;
+  }
 
   // ===== 速度分 =====
   // 听牌：base × 1.0 (固定下叫奖励) + winProb × 4 × base (听张多奖励)
@@ -372,6 +419,8 @@ export function evaluateDiscard(
   // - 保留的根 / 暗刻：直接加分（每个根/暗刻在四川麻将都有显著番数贡献）
   // - 七对/龙七对/大对子/清一色潜力：在听牌阶段保留 30% 权重（仍可能升级），
   //   1 向听及以下保留 100% 权重
+  //
+  // 注意：听牌阶段 settle 已包含根贡献，结构奖励权重小幅保留即可
   const structureWeight = shantenAfter === 0 ? 0.3 : 1.0;
   const futureStructureBonus =
     structureWeight * (
@@ -380,8 +429,11 @@ export function evaluateDiscard(
       pots.allPungsPotential * 0.3 * baseScore +
       pots.pureSuitPotential * 0.5 * baseScore
     );
+  // 听牌阶段：根的价值已经通过 settle 体现在 tenpaiWinReward 中，结构 bonus 不再重复加根
+  // 未听阶段：preservedGen 仍是潜在价值，未被 winRewardEstimate 完全捕获，保留小额奖励
+  const genStructureBonus = shantenAfter === 0 ? 0 : preservedGen * 0.35 * baseScore;
   const structureBonus =
-    preservedGen * 0.35 * baseScore +              // 1 根 ≈ 1 番期望增量 ≈ 0.35×base
+    genStructureBonus +
     afterTriplets * 0.08 * baseScore +             // 暗刻仅有"升级为根"的小概率，价值很小
     futureStructureBonus;
 
@@ -505,26 +557,19 @@ export function suggestDiscardsBySpeed(
 /**
  * 暗杠候选评估：手中 4 张相同的牌，杠掉后变成 1 副明面子（kong），手牌从 14 张变 11 张
  *
- * 评估方法：
- * 1. 模拟"杠后再摸一张"的状态（杠后会从牌墙补一张）
- * 2. 因为补的牌不确定，取所有可能补牌的加权平均 EV
- * 3. 杠本身额外加 1 根的奖励，且番数上限提升
- */
-/**
- * 暗杠候选评估：手中 4 张相同的牌，杠掉后变成 1 副明面子（kong），手牌从 14 张变 11 张
+ * 算法（完整枚举版）：
+ *   遍历所有 remainingPool[t] > 0 的补牌 t
+ *   对每个分支：复制 remainingPool，decrement t，找到 afterKong+t 的最佳出牌 EV
+ *   按 remainingPool[t] / totalUnseen 加权得到 kong 后的期望 EV
  *
- * 算法（近似版，参考社区 mahjong-helper / pystyle 的暗杠决策模板）：
- *
- *   原始版需要枚举所有 27 种补牌 × 27 种打牌 = 729 次 evaluateDiscard，太重。
- *   用户给的近似公式：
- *     kongEV ≈ baseEV(after kong, no draw)
- *            + 0.5×base + 0.4    // +1 根 + 杠后多摸一张
- *            − (breaksTenpaiStructure ? 2.0 : 0)
- *
- *   这里我们采用："取代表性补张（remainingPool 顶张） + 1 次 27 种打牌枚举"。
- *   相比原来快 ~27 倍，精度上的关键事实仍被保留：
+ *   保留的精度关键事实：
  *     - 听牌结构破坏判定（重要）
- *     - 杠后牌型的最优出牌（次要，但代表性补张已能反映大部分情形）
+ *     - 杠后牌型的最优出牌（每个补牌分支都精确计算）
+ *
+ *   与之前"取代表性补张"相比：
+ *     - 之前：1 次 evaluateDiscard 枚举（27 个 discard）= ~27 次
+ *     - 现在：N 个补牌 × 27 个 discard = 至多 27×27 = 729 次（实际 N 通常 < 27）
+ *     - 在用户已强制要求完整枚举的情形下，这是必要的精度成本
  */
 function evaluateConcealedKong(
   hand: CountArray,
@@ -532,7 +577,7 @@ function evaluateConcealedKong(
   opts: EvOptions
 ): EvDiscardSuggestion | null {
   if (hand[kongIdx] !== 4) return null;
-  const { remainingPool, totalUnseen, melds, genMode, fanCap, baseScore, wallLeft } = opts;
+  const { remainingPool, totalUnseen, melds, genMode, fanCap, baseScore, wallLeft, winMethod } = opts;
 
   const afterKong = hand.slice();
   afterKong[kongIdx] = 0;
@@ -545,57 +590,78 @@ function evaluateConcealedKong(
   const shAfterKong = calcShanten(afterKong, newMelds.length, newMelds).shanten;
   const breaksTenpaiStructure = shAfterKong > shBefore;
 
-  // ===== 取 remainingPool 顶张作为代表性补牌（避免枚举全部 27 种 drawT） =====
+  // ===== 完整枚举所有 remainingPool[t]>0 的补牌 =====
+  let weightedSubEv = 0;
+  let totalDrawWeight = 0;
+  let bestSubResult: EvDiscardSuggestion | null = null;
+  let bestSubEv = -Infinity;
   let bestDrawT = -1;
-  let bestRemaining = 0;
-  for (let t = 0; t < TILE_KIND_COUNT; t++) {
-    if (afterKong[t] >= COPIES_PER_TILE_LIMIT) continue;
-    const r = remainingPool[t];
-    if (r > bestRemaining) {
-      bestRemaining = r;
-      bestDrawT = t;
+
+  for (let drawT = 0; drawT < TILE_KIND_COUNT; drawT++) {
+    if (afterKong[drawT] >= COPIES_PER_TILE_LIMIT) continue;
+    const drawRemaining = remainingPool[drawT];
+    if (drawRemaining <= 0) continue;
+
+    const drawn = afterKong.slice();
+    drawn[drawT]++;
+
+    // 复制 remainingPool 并 decrement t（该补牌已被自己摸到，未见牌池中应减 1）
+    const subPool = remainingPool.slice();
+    subPool[drawT] = Math.max(0, subPool[drawT] - 1);
+
+    const subOpts: EvOptions = {
+      hand: drawn,
+      remainingPool: subPool,
+      totalUnseen: Math.max(1, totalUnseen - 1),
+      melds: newMelds,
+      genMode,
+      fanCap,
+      baseScore,
+      wallLeft: wallLeft !== undefined ? Math.max(0, wallLeft - 1) : undefined,
+      winMethod
+    };
+
+    // 找该补牌分支下的最佳出牌 EV
+    let branchBest = -Infinity;
+    let branchBestResult: EvDiscardSuggestion | null = null;
+    for (let d = 0; d < TILE_KIND_COUNT; d++) {
+      if (drawn[d] === 0) continue;
+      const cand = evaluateDiscard(drawn, d, subOpts);
+      if (cand.expectedScore > branchBest) {
+        branchBest = cand.expectedScore;
+        branchBestResult = cand;
+      }
+    }
+    if (!branchBestResult) continue;
+
+    weightedSubEv += branchBest * drawRemaining;
+    totalDrawWeight += drawRemaining;
+
+    if (branchBest > bestSubEv) {
+      bestSubEv = branchBest;
+      bestSubResult = branchBestResult;
+      bestDrawT = drawT;
     }
   }
-  if (bestDrawT < 0 || bestRemaining === 0) {
+
+  if (totalDrawWeight === 0 || !bestSubResult) {
     return null; // 牌堆见底，无法补牌
   }
 
-  const drawn = afterKong.slice();
-  drawn[bestDrawT]++;
-
-  const subOpts: EvOptions = {
-    hand: drawn,
-    remainingPool,
-    totalUnseen: Math.max(1, totalUnseen - 1),
-    melds: newMelds,
-    genMode,
-    fanCap,
-    baseScore,
-    wallLeft: wallLeft !== undefined ? Math.max(0, wallLeft - 1) : undefined
-  };
-
-  let bestSubEv = -Infinity;
-  let bestSubResult: EvDiscardSuggestion | null = null;
-  for (let d = 0; d < TILE_KIND_COUNT; d++) {
-    if (drawn[d] === 0) continue;
-    const cand = evaluateDiscard(drawn, d, subOpts);
-    if (cand.expectedScore > bestSubEv) {
-      bestSubEv = cand.expectedScore;
-      bestSubResult = cand;
-    }
-  }
-  if (!bestSubResult) return null;
+  // 加权平均 EV（按 remainingPool[t] / totalUnseen）
+  const avgSubEv = weightedSubEv / totalDrawWeight;
 
   // ===== 暗杠本身的奖励 / 惩罚 =====
   //   1. +1 根 + 杠后多摸一张 → ≈ 0.5×base + 0.4
+  //      di 模式下，根的"加底"价值已通过 settle 在子分支体现，这里仅给"杠的速度优势"
   //   2. 杠走破坏听牌结构 → −2.0
   const kongBonus = baseScore * 0.5 + 0.4;
   const tenpaiBreakPenalty = breaksTenpaiStructure ? 2.0 : 0;
 
   const reasons: string[] = [
     `暗杠 ${indexToCode(kongIdx)}：4 张相同变为暗杠，+1 根、番数上限 +1`,
-    `杠后预期最优出牌：${bestSubResult.discardCode}（${bestSubResult.reasons[0] ?? ''}）`,
-    `杠后近似 EV ≈ ${bestSubEv.toFixed(2)}（代表性补牌 ${indexToCode(bestDrawT)}）`
+    `杠后枚举所有 ${totalDrawWeight} 张补牌的加权 EV ≈ ${avgSubEv.toFixed(2)}`,
+    `代表分支：补 ${indexToCode(bestDrawT)} → 最优出牌 ${bestSubResult.discardCode}（${bestSubResult.reasons[0] ?? ''}）`
   ];
   if (breaksTenpaiStructure) {
     reasons.push(`⚠ 杠走会破坏当前听牌结构（向听 ${shBefore} → ${shAfterKong}），不建议杠`);
@@ -612,7 +678,7 @@ function evaluateConcealedKong(
     effectiveCount: bestSubResult.effectiveCount,
     probability: bestSubResult.probability,
 
-    expectedScore: bestSubEv + kongBonus - tenpaiBreakPenalty,
+    expectedScore: avgSubEv + kongBonus - tenpaiBreakPenalty,
     speedScore: bestSubResult.speedScore,
     valueScore: bestSubResult.valueScore + kongBonus - tenpaiBreakPenalty,
     winProbability: bestSubResult.winProbability,

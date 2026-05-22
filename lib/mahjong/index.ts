@@ -33,6 +33,7 @@ import {
   computeFan,
   buildFullHand,
   GenMode,
+  WinMethod,
   FanResult,
   MeldInfo,
   settle
@@ -52,7 +53,7 @@ export {
   calcShanten
 };
 export type { ShantenResult, WaitingTile, MeldDecl } from './analyzer';
-export type { GenMode, FanResult, MeldInfo } from './scoring';
+export type { GenMode, WinMethod, FanResult, MeldInfo } from './scoring';
 export type { EvDiscardSuggestion } from './ev';
 
 export type Phase = 'win' | 'tenpai' | 'noten';
@@ -77,6 +78,8 @@ export interface AnalysisInput {
   /** 牌墙剩余张数（用于 winProb 推算自己还能摸几巡：turnsLeft = floor(wallLeft/4)） */
   wallLeft?: number;
   genMode?: GenMode;
+  /** 胡牌方式：discard=点炮 / tsumo=自摸（自摸 +1 番）。默认 'discard' */
+  winMethod?: WinMethod;
   baseScore?: number;
   fanCap?: number;
   /** 出牌建议优化目标：默认 expectedScore（综合 EV） */
@@ -114,32 +117,33 @@ export type WinAnalysis = AnalysisResultPayload | AnalysisErrorPayload;
 
 const VALID_TILE = /^[1-9][msp]$/;
 
-function validateInput(input: AnalysisInput): string | null {
-  if (!Array.isArray(input.handCodes)) return '非法手牌：handCodes 必须是数组';
+function validateInput(input: AnalysisInput): { error?: string; warnings: string[] } {
+  const warnings: string[] = [];
+  if (!Array.isArray(input.handCodes)) return { error: '非法手牌：handCodes 必须是数组', warnings };
   // 1. 校验每张牌的格式
   for (const c of input.handCodes) {
     if (typeof c !== 'string' || !VALID_TILE.test(c)) {
-      return `非法手牌：${c} 不是合法的牌码（应为 1m..9p）`;
+      return { error: `非法手牌：${c} 不是合法的牌码（应为 1m..9p）`, warnings };
     }
   }
   if (input.handCodes.length > 14) {
-    return `非法手牌：手牌不能超过 14 张（实际 ${input.handCodes.length} 张）`;
+    return { error: `非法手牌：手牌不能超过 14 张（实际 ${input.handCodes.length} 张）`, warnings };
   }
   // 2. 校验每种牌不能超过 4 张
   const counts: Record<string, number> = {};
   for (const c of input.handCodes) counts[c] = (counts[c] ?? 0) + 1;
   for (const [code, n] of Object.entries(counts)) {
-    if (n > 4) return `非法手牌：${code} 超过4张（实际 ${n} 张）`;
+    if (n > 4) return { error: `非法手牌：${code} 超过4张（实际 ${n} 张）`, warnings };
   }
   // 3. melds 校验
   if (input.melds !== undefined) {
-    if (!Array.isArray(input.melds)) return '非法 melds：必须是数组';
-    if (input.melds.length > 4) return '非法 melds：最多 4 副';
+    if (!Array.isArray(input.melds)) return { error: '非法 melds：必须是数组', warnings };
+    if (input.melds.length > 4) return { error: '非法 melds：最多 4 副', warnings };
     for (const m of input.melds) {
-      if (!m || typeof m !== 'object') return '非法 melds：元素格式错误';
-      if (m.type !== 'pung' && m.type !== 'kong') return `非法 melds：type 必须是 pung 或 kong（实际 ${m.type}）`;
+      if (!m || typeof m !== 'object') return { error: '非法 melds：元素格式错误', warnings };
+      if (m.type !== 'pung' && m.type !== 'kong') return { error: `非法 melds：type 必须是 pung 或 kong（实际 ${m.type}）`, warnings };
       if (typeof m.tile !== 'string' || !VALID_TILE.test(m.tile)) {
-        return `非法 melds：tile ${m.tile} 不是合法牌码`;
+        return { error: `非法 melds：tile ${m.tile} 不是合法牌码`, warnings };
       }
     }
   }
@@ -147,17 +151,17 @@ function validateInput(input: AnalysisInput): string | null {
   const totalCounts: Record<string, number> = { ...counts };
   for (const m of input.melds ?? []) {
     totalCounts[m.tile] = (totalCounts[m.tile] ?? 0) + (m.type === 'kong' ? 4 : 3);
-    if (totalCounts[m.tile] > 4) return `非法手牌：${m.tile} 加上 melds 后超过4张`;
+    if (totalCounts[m.tile] > 4) return { error: `非法手牌：${m.tile} 加上 melds 后超过4张`, warnings };
   }
   // 5. baseScore / fanCap 校验
   if (input.baseScore !== undefined) {
     if (typeof input.baseScore !== 'number' || !isFinite(input.baseScore) || input.baseScore <= 0) {
-      return `非法 baseScore：必须是正数（实际 ${input.baseScore}）`;
+      return { error: `非法 baseScore：必须是正数（实际 ${input.baseScore}）`, warnings };
     }
   }
   if (input.fanCap !== undefined) {
     if (typeof input.fanCap !== 'number' || !isFinite(input.fanCap) || input.fanCap < 0 || !Number.isInteger(input.fanCap)) {
-      return `非法 fanCap：必须是非负整数（实际 ${input.fanCap}）`;
+      return { error: `非法 fanCap：必须是非负整数（实际 ${input.fanCap}）`, warnings };
     }
   }
   // 6. 总张数校验：hand + melds*3 = 13 或 14
@@ -167,23 +171,52 @@ function validateInput(input: AnalysisInput): string | null {
     // 允许部分输入（用户还在拼牌），仅警告而不拒绝；交给上层处理
     // 此处不返回错误
   }
-  return null;
+
+  // 7. visibleCodes 校验 + 与 hand/melds 的总量 / 重复检查
+  if (input.visibleCodes !== undefined) {
+    if (!Array.isArray(input.visibleCodes)) {
+      return { error: '非法 visibleCodes：必须是数组', warnings };
+    }
+    const visCounts: Record<string, number> = {};
+    for (const c of input.visibleCodes) {
+      if (typeof c !== 'string' || !VALID_TILE.test(c)) {
+        return { error: `非法 visibleCodes：${c} 不是合法的牌码`, warnings };
+      }
+      visCounts[c] = (visCounts[c] ?? 0) + 1;
+    }
+    // 检查 hand + melds + visibleCodes 每种牌总数 <= 4
+    // 记录 melds 内每种牌占用张数
+    const meldTilePerCode: Record<string, number> = {};
+    for (const m of input.melds ?? []) {
+      meldTilePerCode[m.tile] = (meldTilePerCode[m.tile] ?? 0) + (m.type === 'kong' ? 4 : 3);
+    }
+    for (const code of new Set([...Object.keys(counts), ...Object.keys(meldTilePerCode), ...Object.keys(visCounts)])) {
+      const sum = (counts[code] ?? 0) + (meldTilePerCode[code] ?? 0) + (visCounts[code] ?? 0);
+      if (sum > 4) {
+        warnings.push(
+          `输入不一致：${code} 在 hand+melds+visibleCodes 中合计 ${sum} 张（>4），可能 visibleCodes 与 melds/hand 重复输入；分析继续，但概率分母可能受影响`
+        );
+      }
+    }
+  }
+  return { warnings };
 }
 
 export function analyze(input: AnalysisInput): WinAnalysis {
   // ===== 输入校验 =====
-  const err = validateInput(input);
-  if (err) {
-    return { ok: false, error: err };
+  const v = validateInput(input);
+  if (v.error) {
+    return { ok: false, error: v.error, warnings: v.warnings };
   }
 
-  const warnings: string[] = [];
+  const warnings: string[] = [...v.warnings];
   const hand = countsFromCodes(input.handCodes);
   const visible = countsFromCodes(input.visibleCodes ?? []);
   const melds: MeldDecl[] = input.melds ?? [];
   const meldCount = melds.length > 0 ? melds.length : (input.meldCount ?? 0);
   const meldInfos: MeldInfo[] = melds.map(m => ({ type: m.type, tile: m.tile }));
   const genMode = input.genMode ?? 'fan';
+  const winMethod: WinMethod = input.winMethod === 'tsumo' ? 'tsumo' : 'discard';
   const baseScore = input.baseScore ?? 1;
   const fanCap = input.fanCap ?? 4;
   const isHaidi = input.isHaidi ?? false;
@@ -234,10 +267,16 @@ export function analyze(input: AnalysisInput): WinAnalysis {
 
   const handSummary = handCodesToHumanReadable(input.handCodes);
 
+  // 计算 remainingPool。已见牌 = visible + meldTiles（碰/杠占用的牌也是已见牌）
+  // 注意：若 visibleCodes 与 melds 已经重复（如用户又把 melds 中的牌写到了 visibleCodes），
+  // validateInput 已经发出 warning。这里仍用 max(0, ...) 兜底，但不会因总数 >4 而崩。
   const visibleAll = visible.slice();
   for (let i = 0; i < visibleAll.length; i++) visibleAll[i] += meldTiles[i];
   const remainingPool = defaultRemainingPool(hand, visibleAll);
   const totalUnseen = remainingPool.reduce((a, b) => a + b, 0);
+  if (totalUnseen <= 0) {
+    warnings.push('剩余牌池总数为 0：可能 hand+melds+visibleCodes 已覆盖全部 27 种牌，进张概率分母异常');
+  }
 
   // ===== 直接判定胡牌 =====
   if (handTotal === expectedDrawn && isWinningHand(hand, meldCount, melds)) {
@@ -245,7 +284,7 @@ export function analyze(input: AnalysisInput): WinAnalysis {
       concealed: hand,
       melds: meldInfos,
       fullHand,
-      winMethod: 'discard',
+      winMethod,
       isHaidi,
       isAfterKong,
       isKongDischarge,
@@ -283,7 +322,7 @@ export function analyze(input: AnalysisInput): WinAnalysis {
           melds: meldInfos,
           fullHand: winFull,
           winningTile: w.code,
-          winMethod: 'discard',
+          winMethod,
           isHaidi,
           isAfterKong,
           isKongDischarge,
@@ -322,7 +361,8 @@ export function analyze(input: AnalysisInput): WinAnalysis {
       genMode,
       fanCap,
       baseScore,
-      wallLeft
+      wallLeft,
+      winMethod
     });
     const speedList = suggestDiscardsBySpeed(hand, {
       hand,
@@ -332,7 +372,8 @@ export function analyze(input: AnalysisInput): WinAnalysis {
       genMode,
       fanCap,
       baseScore,
-      wallLeft
+      wallLeft,
+      winMethod
     });
 
     // 给速度模式的 top1 加上"拆根/降番"提示（如果适用）

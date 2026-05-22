@@ -49,14 +49,40 @@ export async function POST(req: NextRequest) {
       const baseScore = typeof body.baseScore === 'number' && body.baseScore > 0 ? body.baseScore : 1;
       const fanCap = typeof body.fanCap === 'number' && body.fanCap >= 0 ? body.fanCap : 4;
       const genMode = body.genMode === 'di' ? 'di' : 'fan';
-      // 计算可见牌
+      const winMethod = body.winMethod === 'tsumo' ? 'tsumo' : 'discard';
+
+      // 已见牌：visibleCodes（场上弃牌等）
       const visibleCodes = Array.isArray(body.visibleCodes) ? body.visibleCodes : [];
       const visible = countsFromCodes(visibleCodes);
+
+      // 已碰/杠副的牌也是已见牌（每副 pung 占 3 张，kong 占 4 张）
+      const meldTiles = new Array(27).fill(0);
+      for (const m of melds) {
+        if (!m || typeof m !== 'object') continue;
+        if (m.type !== 'pung' && m.type !== 'kong') continue;
+        if (typeof m.tile !== 'string' || !/^[1-9][msp]$/.test(m.tile)) continue;
+        const idx = (parseInt(m.tile[0], 10) - 1) + (m.tile[1] === 'm' ? 0 : m.tile[1] === 's' ? 9 : 18);
+        meldTiles[idx] += m.type === 'kong' ? 4 : 3;
+      }
+
+      // remainingPool = 4 - hand - visible - meldTiles，且至少为 0
+      // targetCode 进入 shouldPong 后会再扣 1（在 strategy.ts 的 shouldPong 里）
       const remainingPool = new Array(27).fill(0).map((_, i) =>
-        Math.max(0, 4 - hand[i] - (visible[i] || 0))
+        Math.max(0, 4 - hand[i] - (visible[i] || 0) - meldTiles[i])
       );
       const totalUnseen = remainingPool.reduce((a: number, b: number) => a + b, 0);
-      const result = shouldPong(hand, targetCode, melds, remainingPool, totalUnseen, baseScore, fanCap, genMode);
+      const result = shouldPong(
+        hand,
+        targetCode,
+        melds,
+        remainingPool,
+        totalUnseen,
+        baseScore,
+        fanCap,
+        genMode,
+        undefined,
+        winMethod
+      );
       return NextResponse.json({ ok: true, mode, result });
     }
   } catch (e: any) {

@@ -123,16 +123,26 @@ function standardShantenFromCounts(counts: CountArray, meldCount: number = 0): n
 }
 
 // =============== 七对 / 龙七对 向听数 ===============
-function chitoitsuShanten(counts: CountArray): number {
-  let pairs = 0;
-  let kinds = 0;
+//
+// 七对/龙七对的"对单元"统计口径（与 scoring.ts chitoitsuInfo 一致）：
+//   counts[i] === 2 → 1 个 pair unit
+//   counts[i] === 4 → 2 个 pair units（龙七对的 4 张相同算作两个对子）
+//   counts[i] === 3 → 1 个 pair unit（额外那张是孤张/进张待定）
+// 不强制要求 7 个不同 tile kinds：龙七对 6 种甚至更少种类即可凑成 7 对。
+export function countPairUnits(counts: CountArray): number {
+  let units = 0;
   for (let i = 0; i < TILE_KIND_COUNT; i++) {
-    if (counts[i] >= 2) pairs++;
-    if (counts[i] >= 1) kinds++;
+    if (counts[i] === 4) units += 2;
+    else if (counts[i] === 2 || counts[i] === 3) units += 1;
   }
-  let s = 6 - pairs;
-  if (kinds < 7) s += 7 - kinds;
-  return s;
+  return units;
+}
+
+function chitoitsuShanten(counts: CountArray): number {
+  // 13 张状态距离七对成立（7 对 = 14 张）的"还差几次进张"
+  // 每多一个 pair unit 减 1 步；不足 7 时与 6-pairUnits 取上限避免负值
+  const pairs = countPairUnits(counts);
+  return Math.max(0, 6 - pairs);
 }
 
 // =============== 缺一门约束（包含 melds） ===============

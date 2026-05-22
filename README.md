@@ -71,7 +71,7 @@ npm run dev
 跑测试：
 
 ```powershell
-npm test           # 一次性跑所有 vitest 用例（17 个）
+npm test           # 一次性跑所有 vitest 用例（33 个）
 npm run test:watch # 监听模式
 ```
 
@@ -126,21 +126,32 @@ npm run test:watch # 监听模式
 - `shantenAfter==0` 时直接调严格枚举得真听张
 - `shantenAfter≥1` 时枚举每张可摸 t，要求 `calcShanten(after+t)` 下降，**且若下降到 0 必须能在保留 baseGen 个根的前提下下叫**——避免把"必须拆根才能下叫"算成有效进张
 
-**5. EV 双轴评分（已按 1 根 ≈ 1 番校准）**
+**5. EV 双轴评分（已按 1 根 ≈ 1 番校准；听牌阶段 settle() 加权）**
+
+听牌阶段（`shantenAfter === 0`）：直接用 `settle(baseScore, fan, fanCap).perPlayer` 计算每个胡张的真实结算金额，按 `remaining / totalUnseen` 加权得到 `winRewardEstimate`。**不再使用 `winProbability × baseScore × 2^maxFanPotential`**。`averageFan` / `maxFanPotential` / `fanDistribution` 仅作为展示字段保留。
+
+未听阶段（`shantenAfter ≥ 1`）：仍用启发式估算 `estMaxFan`，但严格区分 `genMode`：
+- `fan` 模式：根计入 `estMaxFan`（每根 +1 番）
+- `di` 模式：根**不**计入 `estMaxFan`，通过 `winProbability × baseScore × preservedGen` 体现加底贡献（与 `settle.extraDi` 同口径）
+
 ```
 expectedScore = speedScore + valueScore
 
 speedScore = winRewardEstimate + tingValue
-  winRewardEstimate = winProbability × baseScore × 2^maxFanPotential
-  tingValue (听牌) = baseScore × 1.0 + winProbability × 4 × baseScore
-  tingValue (1向听) = min(0.4 × baseScore, ukeireRatio × baseScore × 0.8)
+  winRewardEstimate (听牌)  = Σ remaining(t) × settle(baseScore, fan_t, fanCap).perPlayer / totalUnseen
+  winRewardEstimate (未听 fan) = winProb × baseScore × 2^estMaxFan
+  winRewardEstimate (未听 di)  = winProb × baseScore × 2^estMaxFan + winProb × baseScore × preservedGen
+  tingValue (听牌)   = baseScore × 1.0 + winProbability × 4 × baseScore
+  tingValue (1 向听) = min(0.4 × baseScore, ukeireRatio × baseScore × 0.8)
 
 valueScore = structureBonus - lostGenPenalty - lostTripletPenalty - riskPenalty
-  structureBonus = preservedGen × 0.35 + preservedTriplets × 0.08
-                 + (听牌时×0.3, 否则×1.0) × (七对/龙七对/大对子/清一色潜力)
+  structureBonus (听牌)   = preservedTriplets × 0.08 + 0.3 × (七对/龙七对/大对子/清一色潜力)
+  structureBonus (未听)   = preservedGen × 0.35 + preservedTriplets × 0.08 + 1.0 × (...潜力)
   lostGenPenalty = lostGen × (0.5 × baseScore + 0.3)
   lostTripletPenalty = lostTriplets × 0.15
 ```
+
+注：听牌阶段根的价值已经通过 `settle` 体现在 `winRewardEstimate` 中，所以听牌阶段的 `structureBonus` 不再重复加根。
 
 **校准依据**（参考 [xzdd-counter](https://github.com/2ue/xzdd-counter)）：
 - 1 根 ≈ 1 番 ≈ 大对子 ≈ 海底捞月（在川麻基础番值表里地位相同）
@@ -150,9 +161,10 @@ valueScore = structureBonus - lostGenPenalty - lostTripletPenalty - riskPenalty
 
 参考 pystyle 期待値計算 与 riichi.wiki Tile Efficiency 的双指标设计；听牌阶段保留 30% 结构权重，避免双对子结构被一刀切清零。
 
-**6. 暗杠候选 `evaluateConcealedKong`（近似版，~27× 加速）**
-- 手中 4 张相同 → 取 `remainingPool` 顶张作为代表性补牌（替代原来的 27×27 暴力枚举）
-- 听牌结构破坏判定：若 `calcShanten(afterKong) > calcShanten(before)` 则 `−2.0` 惩罚
+**6. 暗杠候选 `evaluateConcealedKong`（完整枚举版）**
+- 手中 4 张相同 → 枚举所有 `remainingPool[t] > 0` 的补牌 t
+- 每个补牌分支：复制 `remainingPool` 并 `decrement t`，对 `afterKong+t` 调最佳出牌 EV，按 `remainingPool[t] / totalUnseen` 加权
+- 听牌结构破坏判定：若 `calcShanten(afterKong) > calcShanten(before)` 则 `−2.0` 惩罚（保留）
 - 杠本身的额外奖励：`0.5×base + 0.4`（含 1 根 + 多摸 1 张的价值）
 - 与 `evaluateDiscard` 一起进入推荐排序
 
@@ -172,10 +184,12 @@ valueScore = structureBonus - lostGenPenalty - lostTripletPenalty - riskPenalty
 - 2 向听：先进 1 向听 → 进听 → 再胡的三阶段递归
 - 3+ 向听用粗略估计
 
-**10. 碰决策 `shouldPong`（对称 EV 比较）**
-- 不碰路径：把 target 加进手得 14 张，调用 `suggestDiscardsByEv` 取 top1 EV
-- 碰路径：拆 2 张 + 加 1 副 pung，11 张调 `suggestDiscardsByEv` 取 top1 EV
+**10. 碰决策 `shouldPong`（对称 EV 比较，13 张 future EV）**
+- **不碰路径不能把 target 加入 hand**。target 是别人打的牌，自己未碰则不进手；仅作为已见牌从 `remainingPool` 扣 1。
+- 13 张 future EV：枚举下一摸 t，按 `remainingPool` 权重，进入 `hand+t` 的 14 张待打状态，调 `suggestDiscardsByEv` 取 top1.expectedScore，按 `remainingPool[t] / totalUnseenAfterSeen` 加权得未来 EV。
+- 碰路径：target 也是已见牌，从 `remainingPool` 扣 1；`hand[target] -= 2`；`melds += pung(target)`；11 张状态再调 `suggestDiscardsByEv` 取 top1.expectedScore。
 - 两者 +0.2 阈值以上才推荐碰，避免边际收益误判
+- `winMethod` 透传到 EV 计算，影响自摸的 +1 番
 
 **11. 定缺 `suggestDingque`**
 - 单门结构损失：刻 1.5 / 顺 1.5 / 对 0.5 / 搭 0.3 / **相邻空挡 (i+3) 0.2**（识别 79、14、47 这类松搭子）
@@ -184,14 +198,25 @@ valueScore = structureBonus - lostGenPenalty - lostTripletPenalty - riskPenalty
 **12. 输入合法性校验**
 - `/api/analyze` 拒绝：非法牌码、单种 > 4 张、melds 格式错、`baseScore ≤ 0`、`fanCap` 不是非负整数
 - `/api/recognize`：图片 ≤ 8 MB、base64 合法；AI 返回二次过滤
-- `/api/strategy`：mode 必须是 dingque/swap3/pong；牌码合法；pong 模式需 targetCode
+- `/api/strategy`：mode 必须是 dingque/swap3/pong；牌码合法；pong 模式需 targetCode；`remainingPool` 同时扣减 hand + visibleCodes + melds（每副 pung 占 3 张、kong 占 4 张），target 进入 `shouldPong` 后再扣 1
+- `analyze` 现在校验 `hand + melds + visibleCodes` 每种牌总数 ≤ 4，超出时返回 warning 而不是静默压 `remainingPool` 到 0
+
+**13. 胡牌方式 `winMethod`**
+- `/api/analyze` 与 `analyze()` 接受 `winMethod?: "discard" | "tsumo"`，默认 `"discard"`
+- 直接胡牌、听牌阶段每张胡张的 `computeFan`、EV 估番都使用同一 `winMethod`，不再写死
+- `winMethod === "tsumo"` 时 `scoring.ts` 的 `computeFan` 自动加上 `+1 自摸`
+
+**14. genMode 加底语义**
+- `genMode === "di"` 时根**不**进入 `estMaxFan`；加底通过 `FanResult.extraDi + settle().perPlayer = base × 2^(cappedFan-1) + base × extraDi` 体现
+- 听牌阶段完全以 `settle()` 为准，未听阶段启发式区分 fan/di：`fan` 模式根计入 `estMaxFan`、`di` 模式额外加 `winProb × base × preservedGen`
 
 ---
 
 ## ✅ 测试
 
-vitest 测试套件覆盖 17 个核心验收点（`tests/acceptance.test.ts` + `tests/ev.test.ts`）：
+vitest 测试套件覆盖 33 个进攻算法验收点（`tests/acceptance.test.ts` + `tests/ev.test.ts` + `tests/offense.test.ts`）：
 
+**原有 17 个验收点：**
 - shantenAfter === 0 必须有真听张
 - `7777万 2334445666条`：EV 模式首推暗杠或非"打 7m"，speed 模式 7m 必须标"拆根/降番"
 - 已碰第三门时不能绕过缺一门检查
@@ -203,6 +228,19 @@ vitest 测试套件覆盖 17 个核心验收点（`tests/acceptance.test.ts` + `
 - enumerateWaitingTilesStrict 含 melds 时正常工作
 - 7m×4 死结构下任何 discard 不应同时是 1 向听 + 进张 0 张
 - 22344678s 567999p：首推 2s 或 4s（听 6 张），9p 拆暗刻应排末位
+
+**进攻算法回归（offense.test.ts，10 + 1）：**
+1. 标准胡牌 + 川麻必须缺一门
+2. melds 参与缺一门校验
+3. 严格听牌枚举（真听张返回，伪听张排除）
+4. 三门齐 14 张拆面子也不能算胡
+5. 4 张算 2 对的七对向听（`countPairUnits`）
+6. 龙七对成胡 + fan 标记
+7. genMode fan / di 结算差异（fan 进 totalFan vs di 进 extraDi）
+8. winMethod=tsumo 端到端接通（直接胡 + 听牌阶段每张胡张 +1）
+9. shouldPong 不碰路径不能把 target 加入 hand
+10. 听牌 EV 必须用 `settle()` 按胡张剩余数加权
+11. 暗杠 EV 必须枚举所有补牌并扣减 `remainingPool`（不同 pool 下 EV 不同）
 
 ```powershell
 npm test
@@ -238,7 +276,8 @@ sichuan-mahjong/
 │   └── index.ts
 ├── tests/
 │   ├── acceptance.test.ts
-│   └── ev.test.ts
+│   ├── ev.test.ts
+│   └── offense.test.ts             # 10+1 进攻算法回归测试
 ├── public/
 │   ├── tiles/                    # 27 张麻将牌面图（最新素材，148×216）
 │   ├── mahjong-sheet-v3.jpg      # 切图源
@@ -260,7 +299,8 @@ sichuan-mahjong/
   - 3+ 向听用粗略估计
   - turnsLeft 由 `wallLeft / 4` 推算（用户未提供则用默认 12）；进听后的"平均听张数 6"和 1 向听的"平均 ukeire 18"仍是经验常数（单帧分析器无法做实时 ukeire）
   - 没有做完整状态空间的精确枚举（代价指数级）
-- **暗杠用近似公式**：取 `remainingPool` 顶张做代表性补牌而不是 27 张全枚举，~27× 加速；精度上仍保留"听牌结构破坏判定"
+- **暗杠 EV**：完整枚举所有 `remainingPool[t] > 0` 的补牌；每个分支扣减后调最佳出牌 EV，按 pool 权重加权（`evaluateConcealedKong`）
+- **听牌 EV**：用 `settle()` 加权，对每个胡张精确结算；`averageFan` / `maxFanPotential` / `fanDistribution` 仅作展示
 - **EV 公式系数为经验值**，未用对局数据回归过；可在 `lib/mahjong/ev.ts` 调整
 - **根的判定**采用 physical 4 张相同（不论是否被拆为顺+刻）
 

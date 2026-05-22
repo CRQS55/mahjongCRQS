@@ -412,6 +412,17 @@ export interface PongSuggestion {
   reasons: string[];
 }
 
+/**
+ * 碰决策：对称比较"不碰路径 future EV" vs "碰路径 EV"
+ *
+ * 关键修正（P0-1）：
+ *   - 不碰路径不能把 targetCode 加入 hand。targetCode 是别人打的牌，自己没碰就不进手。
+ *   - 不碰路径仍保持原 13 张 hand；targetCode 仅作为已见牌从 remainingPool 扣 1。
+ *   - 13 张状态的 future EV：枚举下一摸 t（按 remainingPool 权重），进入 hand+t 的 14 张待打状态，
+ *     调 suggestDiscardsByEv 取 top1.expectedScore，按 remainingPool[t]/totalUnseenAfter 加权得未来 EV。
+ *   - 碰路径：targetCode 也是已见牌，从 remainingPool 扣 1；hand[target]-=2；melds += pung(target)；
+ *     11 张状态再调 suggestDiscardsByEv 取 top1.expectedScore。
+ */
 export function shouldPong(
   hand: CountArray,
   targetCode: string,
@@ -421,7 +432,8 @@ export function shouldPong(
   baseScore = 1,
   fanCap = 4,
   genMode: 'fan' | 'di' = 'fan',
-  wallLeft?: number
+  wallLeft?: number,
+  winMethod: 'discard' | 'tsumo' = 'discard'
 ): PongSuggestion {
   const targetIdx = codeToIndex(targetCode);
   if (targetIdx === null || hand[targetIdx] < 2) {
@@ -433,62 +445,92 @@ export function shouldPong(
     };
   }
 
-  // ===== 不碰路径 =====
-  // 别人打出的牌进自己手里 → 14 张状态，要打 1 张
-  // 直接复用 suggestDiscardsByEv 算最优出牌的 EV
-  // 注意：14 张里多出来的那张就是 target（视作"摸"了 target 进手）
-  const handPlusTarget = hand.slice();
-  handPlusTarget[targetIdx]++;
+  // ===== 共同：把 target 视为已见牌从 remainingPool 扣 1 =====
+  const poolAfterTargetSeen = remainingPool.slice();
+  poolAfterTargetSeen[targetIdx] = Math.max(0, poolAfterTargetSeen[targetIdx] - 1);
+  const totalUnseenAfterSeen = Math.max(1, totalUnseen - 1);
+
+  // ===== 不碰路径（13 张未来 EV）=====
+  // hand 不变；target 仅是已见牌不进手。
+  // 枚举下一摸 t（按 poolAfterTargetSeen 权重），进入 14 张待打状态，取 suggestDiscardsByEv top1。
+  // future EV = Σ (pool[t] / totalUnseenAfterSeen) × topEV(hand+t)
   let evWithoutPong = 0;
-  let bestNoPongDiscard = '';
-  let bestNoPongReason = '';
-  if (handPlusTarget[targetIdx] <= 4) {
-    const noPongList = suggestDiscardsByEv(handPlusTarget, {
-      hand: handPlusTarget,
-      remainingPool,
-      totalUnseen,
+  let totalWeight = 0;
+  let bestDrawT = -1;
+  let bestDrawEv = -Infinity;
+  let bestDrawDiscard = '';
+  let bestDrawReason = '';
+
+  for (let t = 0; t < 27; t++) {
+    if (hand[t] >= 4) continue;
+    const remaining = poolAfterTargetSeen[t];
+    if (remaining <= 0) continue;
+
+    const drawn = hand.slice();
+    drawn[t]++;
+
+    // 摸 t 后，t 也是已见牌，从池子里再扣 1
+    const subPool = poolAfterTargetSeen.slice();
+    subPool[t] = Math.max(0, subPool[t] - 1);
+
+    const list = suggestDiscardsByEv(drawn, {
+      hand: drawn,
+      remainingPool: subPool,
+      totalUnseen: Math.max(1, totalUnseenAfterSeen - 1),
       melds,
       genMode,
       fanCap,
       baseScore,
-      wallLeft
+      wallLeft: wallLeft !== undefined ? Math.max(0, wallLeft - 1) : undefined,
+      winMethod
     });
-    if (noPongList.length > 0) {
-      evWithoutPong = noPongList[0].expectedScore;
-      bestNoPongDiscard = noPongList[0].discardCode;
-      bestNoPongReason = noPongList[0].reasons[0] ?? '';
-    } else {
-      // 极端：手里没法再打 → 退回 shanten 估计
-      const sh = calcShanten(hand, melds.length, melds);
-      evWithoutPong = -sh.shanten * 0.5;
+    if (list.length === 0) continue;
+    const topEv = list[0].expectedScore;
+
+    evWithoutPong += topEv * remaining;
+    totalWeight += remaining;
+
+    if (topEv > bestDrawEv) {
+      bestDrawEv = topEv;
+      bestDrawT = t;
+      bestDrawDiscard = list[0].discardCode;
+      bestDrawReason = list[0].reasons[0] ?? '';
     }
+  }
+  if (totalWeight > 0) {
+    evWithoutPong = evWithoutPong / totalWeight;
   } else {
-    // target 已经 4 张（理论上应该已暗杠），用 shanten 兜底
+    // 极端情况：池子见底，退回 shanten 启发
     const sh = calcShanten(hand, melds.length, melds);
     evWithoutPong = -sh.shanten * 0.5;
   }
 
-  // ===== 碰路径 =====
+  // ===== 碰路径（11 张待打）=====
   const afterPong = hand.slice();
   afterPong[targetIdx] -= 2;
   const newMelds: MeldDecl[] = [...melds, { type: 'pung', tile: targetCode }];
 
   const evList = suggestDiscardsByEv(afterPong, {
     hand: afterPong,
-    remainingPool,
-    totalUnseen,
+    remainingPool: poolAfterTargetSeen,
+    totalUnseen: totalUnseenAfterSeen,
     melds: newMelds,
     genMode,
     fanCap,
     baseScore,
-    wallLeft
+    wallLeft,
+    winMethod
   });
 
   const evWithPong = evList.length > 0 ? evList[0].expectedScore : 0;
 
   const reasons: string[] = [];
-  if (bestNoPongDiscard) {
-    reasons.push(`不碰：直接打 ${bestNoPongDiscard}（${bestNoPongReason}），EV ${evWithoutPong.toFixed(2)}`);
+  if (bestDrawT >= 0) {
+    reasons.push(
+      `不碰：未来 EV ≈ ${evWithoutPong.toFixed(2)}（代表分支：摸 ${indexToCode(bestDrawT)} → 打 ${bestDrawDiscard}，${bestDrawReason}）`
+    );
+  } else {
+    reasons.push(`不碰：未来 EV ≈ ${evWithoutPong.toFixed(2)}（池子见底，退回启发）`);
   }
   if (evWithPong > evWithoutPong + 0.3) {
     reasons.push(`碰后预期 EV ${evWithPong.toFixed(2)}，明显优于不碰 ${evWithoutPong.toFixed(2)}`);
