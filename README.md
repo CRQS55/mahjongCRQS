@@ -2,9 +2,17 @@
 
 四川麻将（血战到底）AI 助手 — **拍照识牌 · 听牌分析 · 综合 EV 出牌决策 · 暗杠决策 · 番数结算 · 定缺 / 换三张 / 碰决策 · 测试水平 · 段位系统**。
 
-小清新绿色风格，移动端友好，可一键部署到 Vercel。
-
+试玩链接：**mjcrqs.top**      **www.mjcrqs.top**
 ---
+## 📝 反馈 & 商务合作
+
+邮箱：**1507971639@qq.com**
+
+## 📝 License
+
+MIT — 仅供学习和娱乐参考。实际牌桌请遵守当地规则。
+
+by: CRQS
 
 ## ✨ 功能
 
@@ -77,20 +85,6 @@ npm run test:watch # 监听模式
 
 ---
 
-## 🌐 部署到 Vercel
-
-1. 把本目录推到 GitHub 仓库（详见下方"推送步骤"）。
-2. 在 [Vercel](https://vercel.com/new) 选择该仓库，框架选 **Next.js**（自动识别）。
-3. 在 **Environment Variables** 里加入：
-   - `ANTHROPIC_API_KEY` —— 必填，你的 Anthropic key（或第三方中转的 key）
-   - `ANTHROPIC_BASE_URL` —— 可选，使用中转/反代时填
-   - `ANTHROPIC_MODEL` —— 可选，默认 `claude-sonnet-4-6`
-4. 点 Deploy，1 分钟后即可访问。
-
-> ⚠️ Anthropic 接口仅支持 PNG / JPEG / GIF / WEBP，BMP / HEIC 等格式请先转换。
-> ⚠️ `/api/recognize` 已限制最大 8 MB 图片、严格校验 base64、AI 识别后再做"每种 ≤ 4 张、总数 ≤ 14"二次过滤。
-
----
 
 ## 🧠 核心算法
 
@@ -305,13 +299,3 @@ sichuan-mahjong/
 - **根的判定**采用 physical 4 张相同（不论是否被拆为顺+刻）
 
 ---
-
-## 📝 反馈 & 商务合作
-
-邮箱：**1507971639@qq.com**
-
-## 📝 License
-
-MIT — 仅供学习和娱乐参考。实际牌桌请遵守当地规则。
-
-by: CRQS
