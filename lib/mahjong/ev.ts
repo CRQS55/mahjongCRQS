@@ -359,6 +359,13 @@ export function evaluateDiscard(
   const speedScore = winRewardEstimate + tingValue;
 
   // ===== 价值分 =====
+  //
+  // 校准依据（参考 xzdd-counter 等川麻计分项目）：
+  //   1 根 ≈ 1 番 ≈ 大对子 / 海底捞月
+  //   1 番 在结算上是"倍数翻倍"，但要乘以 winProbability 才是真实 EV 增量
+  //   经验值：1 根的期望 EV 贡献 ≈ 0.3–0.4 × base
+  //   暗刻（3 张相同）不是独立番种，仅"潜在升级为根"的概率 ≈ 1.5%，价值 ≈ 0.05 × base
+  //
   // - 保留的根 / 暗刻：直接加分（每个根/暗刻在四川麻将都有显著番数贡献）
   // - 七对/龙七对/大对子/清一色潜力：在听牌阶段保留 30% 权重（仍可能升级），
   //   1 向听及以下保留 100% 权重
@@ -371,12 +378,13 @@ export function evaluateDiscard(
       pots.pureSuitPotential * 0.5 * baseScore
     );
   const structureBonus =
-    preservedGen * 0.8 * baseScore +
-    afterTriplets * 0.4 * baseScore +
+    preservedGen * 0.35 * baseScore +              // 1 根 ≈ 1 番期望增量 ≈ 0.35×base
+    afterTriplets * 0.08 * baseScore +             // 暗刻仅有"升级为根"的小概率，价值很小
     futureStructureBonus;
 
-  const lostGenPenalty = lostGen * (1.2 * baseScore + 0.8);
-  const lostTripletPenalty = lostTriplets * (0.6 * baseScore + 0.4);
+  // 拆暗刻 / 拆根惩罚（与上述价值对应）
+  const lostGenPenalty = lostGen * (0.5 * baseScore + 0.3);    // 拆 1 根代价 ≈ 0.8（base=1）
+  const lostTripletPenalty = lostTriplets * (0.15 * baseScore); // 拆 999→99 代价 ≈ 0.15
 
   const valueScore = structureBonus - lostGenPenalty - lostTripletPenalty - riskPenalty;
 
@@ -561,9 +569,13 @@ function evaluateConcealedKong(
   }
 
   const expectedSubEv = weightedEv / totalWeight;
-  // 暗杠本身：+1 根 + 杠后能再摸（一次额外胡牌机会）
-  // 经验值：暗杠在 fan 模式下 +1 番（约相当于结算翻倍），保守加 0.6×base 的固定奖励
-  const kongBonus = baseScore * 0.6 + 1;
+  // 暗杠本身的价值组成：
+  //   1. +1 根 → ≈ 0.35 × base 的 EV 增量
+  //      （这是暗杠独有的，sub-EV 里 preservedGen 不包含被杠走的这一组）
+  //   2. 杠后能再摸一张牌（多一次进张机会）→ ≈ 0.4 × base
+  //   3. 暗杠后这一组永久锁定，避免被对家碰走/打错
+  // 之前用 0.6×base + 1（即 1.6）严重高估，校准后应在 0.7–0.9 区间
+  const kongBonus = baseScore * 0.5 + 0.4;
 
   return {
     discard: kongIdx,

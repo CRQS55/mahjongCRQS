@@ -1020,13 +1020,27 @@ function OpeningAssistant({
                     }`}
                   >
                     <div className="text-sm font-semibold text-sage-700">
-                      缺{o.suitName} （成本 {o.cost.toFixed(1)}）
+                      缺{o.suitName}（综合代价 {o.cost.toFixed(1)}）
                     </div>
-                    <div className="text-xs text-sage-600">
-                      该门 {o.tilesInSuit} 张 · 剩两门向听 {o.shantenAfter}
-                      {o.hasTriplets && ' · 含暗刻'}
-                      {o.hasPairs > 0 && ` · ${o.hasPairs} 对`}
+                    <div className="text-xs text-sage-600 mt-0.5">
+                      丢 {o.tilesInSuit} 张 · 结构损失 {o.structureLoss.toFixed(1)} ·
+                      剩两门向听 {o.shantenAfter} · ukeire {o.ukeireAfter} 张
                     </div>
+                    <div className="text-xs text-sage-500 mt-0.5">
+                      {o.tripletsRest > 0 && `保留 ${o.tripletsRest} 暗刻 `}
+                      {o.pairsRest > 0 && `· ${o.pairsRest} 对 `}
+                      {o.qingyisePotential && '· 🌈 清一色潜力'}
+                    </div>
+                    <details className="text-xs text-sage-400 mt-1">
+                      <summary className="cursor-pointer">代价分项</summary>
+                      <ul className="pl-3 space-y-0.5 mt-1">
+                        {o.breakdown.map((b: any, j: number) => (
+                          <li key={j}>
+                            {b.item}：{b.value > 0 ? '+' : ''}{b.value.toFixed(2)}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
                   </div>
                 ))}
               </div>
@@ -1038,36 +1052,49 @@ function OpeningAssistant({
               {result.length === 0 ? (
                 <div className="text-xs text-sage-500">没有合适的换三张方案</div>
               ) : (
-                result.map((opt: any, i: number) => (
-                  <div
-                    key={i}
-                    className={`p-2 rounded-lg border ${
-                      i === 0
-                        ? 'border-emerald-300 bg-emerald-50/50'
-                        : 'border-sage-100 bg-white/50'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="pill bg-emerald-500 text-white text-xs">#{i + 1}</span>
-                      <span className="text-xs text-sage-600">换出：</span>
-                      {opt.swapOut.map((t: any) => (
-                        <div key={t.code} className="flex items-center gap-0.5">
-                          {Array.from({ length: t.count }).map((_, k) => (
-                            <MJTile key={k} code={t.code} size="sm" />
-                          ))}
-                        </div>
-                      ))}
-                      <span className="text-xs text-sage-700">
-                        换出后向听 <b>{opt.expectedShantenAfter}</b>
-                      </span>
+                result.map((opt: any, i: number) => {
+                  const tierColor =
+                    opt.sunkenTier === 1
+                      ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                      : opt.sunkenTier === 2
+                        ? 'bg-sky-100 text-sky-800 border-sky-300'
+                        : opt.sunkenTier === 3
+                          ? 'bg-amber-100 text-amber-800 border-amber-300'
+                          : 'bg-red-100 text-red-800 border-red-300';
+                  return (
+                    <div
+                      key={i}
+                      className={`p-2 rounded-lg border ${
+                        i === 0
+                          ? 'border-emerald-300 bg-emerald-50/50'
+                          : 'border-sage-100 bg-white/50'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="pill bg-emerald-500 text-white text-xs">#{i + 1}</span>
+                        <span className={`pill text-xs border ${tierColor}`}>
+                          {opt.sunkenLabel}
+                        </span>
+                        <span className="text-xs text-sage-600">换出：</span>
+                        {opt.swapOut.map((t: any) => (
+                          <div key={t.code} className="flex items-center gap-0.5">
+                            {Array.from({ length: t.count }).map((_, k) => (
+                              <MJTile key={k} code={t.code} size="sm" />
+                            ))}
+                          </div>
+                        ))}
+                        <span className="text-xs text-sage-700">
+                          剩余向听 <b>{opt.expectedShantenAfter}</b>
+                        </span>
+                      </div>
+                      <ul className="text-xs text-sage-600 mt-1 pl-1">
+                        {opt.reasons.map((r: string, j: number) => (
+                          <li key={j}>· {r}</li>
+                        ))}
+                      </ul>
                     </div>
-                    <ul className="text-xs text-sage-600 mt-1 pl-1">
-                      {opt.reasons.map((r: string, j: number) => (
-                        <li key={j}>· {r}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           )}

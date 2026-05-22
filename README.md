@@ -125,7 +125,7 @@ npm run test:watch # 监听模式
 - `shantenAfter==0` 时直接调严格枚举得真听张
 - `shantenAfter≥1` 时枚举每张可摸 t，要求 `calcShanten(after+t)` 下降，**且若下降到 0 必须能在保留 baseGen 个根的前提下下叫**——避免把"必须拆根才能下叫"算成有效进张
 
-**5. EV 双轴评分**
+**5. EV 双轴评分（已按 1 根 ≈ 1 番校准）**
 ```
 expectedScore = speedScore + valueScore
 
@@ -135,18 +135,23 @@ speedScore = winRewardEstimate + tingValue
   tingValue (1向听) = min(0.4 × baseScore, ukeireRatio × baseScore × 0.8)
 
 valueScore = structureBonus - lostGenPenalty - lostTripletPenalty - riskPenalty
-  structureBonus = preservedGen × 0.8 + preservedTriplets × 0.4
+  structureBonus = preservedGen × 0.35 + preservedTriplets × 0.08
                  + (听牌时×0.3, 否则×1.0) × (七对/龙七对/大对子/清一色潜力)
-  lostGenPenalty = lostGen × (1.2 × baseScore + 0.8)
-  lostTripletPenalty = lostTriplets × (0.6 × baseScore + 0.4)
-  riskPenalty = 0   // 占位
+  lostGenPenalty = lostGen × (0.5 × baseScore + 0.3)
+  lostTripletPenalty = lostTriplets × 0.15
 ```
 
-参考 pystyle 期待値計算 与 riichi.wiki Tile Efficiency 的双指标设计；听牌阶段仍保留 30% 结构权重，避免双对子结构被一刀切清零。
+**校准依据**（参考 [xzdd-counter](https://github.com/2ue/xzdd-counter)）：
+- 1 根 ≈ 1 番 ≈ 大对子 ≈ 海底捞月（在川麻基础番值表里地位相同）
+- 1 番在结算上是"倍数翻倍"，但 EV 必须乘以胡牌概率，所以单根的期望增量 ≈ 0.35×base
+- 暗刻（3 张相同）不是独立番种，仅有"摸到第 4 张升级为根"的小概率（≈1.5%），价值 ≈ 0.08×base
+- 之前版本曾把暗刻权重设为 0.4×base、单根惩罚设为 1.2×base+0.8，**夸大约 2-3 倍**，已校准
+
+参考 pystyle 期待値計算 与 riichi.wiki Tile Efficiency 的双指标设计；听牌阶段保留 30% 结构权重，避免双对子结构被一刀切清零。
 
 **6. 暗杠候选 `evaluateConcealedKong`**
 - 手中 4 张相同 → 模拟"杠后再摸一张"的所有可能补牌，计算加权 EV
-- 加上"杠本身奖励"（0.6×base + 1）
+- 杠本身的额外奖励：`0.5×base + 0.4`（含 1 根 + 多摸 1 张的价值）
 - 与 `evaluateDiscard` 一起进入推荐排序
 
 **7. 杠上花 / 杠上炮 / 抢杠胡**
