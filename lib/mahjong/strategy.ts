@@ -57,6 +57,9 @@ export interface DingqueSuggestion {
  *   完整顺子 +1.5
  *   对子 +0.5（半成品）
  *   两面/嵌张/边张搭子 +0.3
+ *   相邻空挡（kanchan，如 79、13、24 这类隔一个的两张孤立牌）+0.2
+ *     —— 这是"潜在嵌张搭子"的兜底识别：如果在 structureLossInSuit 的贪心拆解里没被前面更高优先级的结构吃掉，
+ *        说明它是真正落单的"隔张"，丢掉相当于多走一步进张
  */
 function structureLossInSuit(suitCounts: number[]): number {
   // 用贪心拆解：刻子优先 → 顺子 → 对子 → 搭子
@@ -84,7 +87,7 @@ function structureLossInSuit(suitCounts: number[]): number {
       loss += 0.5;
     }
   }
-  // 4. 两面 / 嵌张搭子
+  // 4. 两面 / 嵌张搭子（相邻 + 隔一个，已用完前 3 类后剩下的）
   for (let i = 0; i <= 7; i++) {
     while (c[i] >= 1 && c[i + 1] >= 1) {
       c[i]--; c[i + 1]--;
@@ -95,6 +98,16 @@ function structureLossInSuit(suitCounts: number[]): number {
     while (c[i] >= 1 && c[i + 2] >= 1) {
       c[i]--; c[i + 2]--;
       loss += 0.3;
+    }
+  }
+  // 5. 相邻空挡（kanchan-with-gap，如 79、13、46 等剩下的"隔一格"双张）
+  // 上一步 i+2 搭子贪心已经吃掉常规嵌张，这里只补"特别松"的隔张：
+  //   - 79、13 这类带边幺九的隔张（实际只能等 8/2，仍是潜在面子）
+  //   - 14、47、69 这类"差两个 rank"的两张（不算搭子，但离面子近）
+  for (let i = 0; i <= 5; i++) {
+    while (c[i] >= 1 && c[i + 3] >= 1) {
+      c[i]--; c[i + 3]--;
+      loss += 0.2;
     }
   }
   return loss;
@@ -407,7 +420,8 @@ export function shouldPong(
   totalUnseen: number,
   baseScore = 1,
   fanCap = 4,
-  genMode: 'fan' | 'di' = 'fan'
+  genMode: 'fan' | 'di' = 'fan',
+  wallLeft?: number
 ): PongSuggestion {
   const targetIdx = codeToIndex(targetCode);
   if (targetIdx === null || hand[targetIdx] < 2) {
@@ -419,9 +433,42 @@ export function shouldPong(
     };
   }
 
-  const sh = calcShanten(hand, melds.length, melds);
-  const evWithoutPong = -sh.shanten * 0.5;
+  // ===== 不碰路径 =====
+  // 别人打出的牌进自己手里 → 14 张状态，要打 1 张
+  // 直接复用 suggestDiscardsByEv 算最优出牌的 EV
+  // 注意：14 张里多出来的那张就是 target（视作"摸"了 target 进手）
+  const handPlusTarget = hand.slice();
+  handPlusTarget[targetIdx]++;
+  let evWithoutPong = 0;
+  let bestNoPongDiscard = '';
+  let bestNoPongReason = '';
+  if (handPlusTarget[targetIdx] <= 4) {
+    const noPongList = suggestDiscardsByEv(handPlusTarget, {
+      hand: handPlusTarget,
+      remainingPool,
+      totalUnseen,
+      melds,
+      genMode,
+      fanCap,
+      baseScore,
+      wallLeft
+    });
+    if (noPongList.length > 0) {
+      evWithoutPong = noPongList[0].expectedScore;
+      bestNoPongDiscard = noPongList[0].discardCode;
+      bestNoPongReason = noPongList[0].reasons[0] ?? '';
+    } else {
+      // 极端：手里没法再打 → 退回 shanten 估计
+      const sh = calcShanten(hand, melds.length, melds);
+      evWithoutPong = -sh.shanten * 0.5;
+    }
+  } else {
+    // target 已经 4 张（理论上应该已暗杠），用 shanten 兜底
+    const sh = calcShanten(hand, melds.length, melds);
+    evWithoutPong = -sh.shanten * 0.5;
+  }
 
+  // ===== 碰路径 =====
   const afterPong = hand.slice();
   afterPong[targetIdx] -= 2;
   const newMelds: MeldDecl[] = [...melds, { type: 'pung', tile: targetCode }];
@@ -433,12 +480,16 @@ export function shouldPong(
     melds: newMelds,
     genMode,
     fanCap,
-    baseScore
+    baseScore,
+    wallLeft
   });
 
   const evWithPong = evList.length > 0 ? evList[0].expectedScore : 0;
 
   const reasons: string[] = [];
+  if (bestNoPongDiscard) {
+    reasons.push(`不碰：直接打 ${bestNoPongDiscard}（${bestNoPongReason}），EV ${evWithoutPong.toFixed(2)}`);
+  }
   if (evWithPong > evWithoutPong + 0.3) {
     reasons.push(`碰后预期 EV ${evWithPong.toFixed(2)}，明显优于不碰 ${evWithoutPong.toFixed(2)}`);
     reasons.push(`碰后建议打 ${evList[0]?.discardCode}：${evList[0]?.reasons[0] ?? ''}`);

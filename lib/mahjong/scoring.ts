@@ -37,6 +37,10 @@ export interface FanContext {
   isKongDischarge?: boolean;
   /** 抢杠胡：别人补杠的牌正是自己胡的牌 */
   isRobKong?: boolean;
+  /** 天胡：庄家发完牌（含自己摸的第 14 张）后直接胡，仅庄家可成立，+6 番 */
+  isHeavenly?: boolean;
+  /** 地胡：闲家第一摸即胡（其间庄家与上家未碰未杠），+6 番 */
+  isEarthly?: boolean;
   genMode: GenMode;
 }
 
@@ -161,7 +165,7 @@ function countGen(concealed: CountArray, melds: MeldInfo[]): number {
 // =============== 综合计算 ===============
 
 export function computeFan(ctx: FanContext): FanResult {
-  const { concealed, melds, fullHand, isHaidi, winMethod, genMode, isAfterKong, isKongDischarge, isRobKong } = ctx;
+  const { concealed, melds, fullHand, isHaidi, winMethod, genMode, isAfterKong, isKongDischarge, isRobKong, isHeavenly, isEarthly } = ctx;
   const meldCount = melds.length;
   const fans: { name: string; value: number }[] = [];
 
@@ -195,6 +199,8 @@ export function computeFan(ctx: FanContext): FanResult {
   if (isAfterKong) fans.push({ name: '杠上花', value: 2 });
   if (isKongDischarge) fans.push({ name: '杠上炮', value: 1 });
   if (isRobKong) fans.push({ name: '抢杠胡', value: 1 });
+  if (isHeavenly) fans.push({ name: '天胡', value: 6 });
+  if (isEarthly) fans.push({ name: '地胡', value: 6 });
 
   // 根
   let genCount = countGen(concealed, melds);

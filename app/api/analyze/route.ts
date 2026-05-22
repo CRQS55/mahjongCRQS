@@ -19,6 +19,12 @@ export async function POST(req: NextRequest) {
   const isAfterKong = !!body.isAfterKong;
   const isKongDischarge = !!body.isKongDischarge;
   const isRobKong = !!body.isRobKong;
+  const isHeavenly = !!body.isHeavenly;
+  const isEarthly = !!body.isEarthly;
+  const wallLeft =
+    typeof body.wallLeft === 'number' && isFinite(body.wallLeft) && body.wallLeft >= 0
+      ? Math.floor(body.wallLeft)
+      : undefined;
   const genMode = body.genMode === 'di' ? 'di' : 'fan';
   const baseScore = typeof body.baseScore === 'number' ? body.baseScore : 1;
   const fanCap = typeof body.fanCap === 'number' ? body.fanCap : 4;
@@ -35,6 +41,9 @@ export async function POST(req: NextRequest) {
       isAfterKong,
       isKongDischarge,
       isRobKong,
+      isHeavenly,
+      isEarthly,
+      wallLeft,
       genMode,
       baseScore,
       fanCap,

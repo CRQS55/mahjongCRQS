@@ -40,7 +40,7 @@ import {
   MeldInfo,
   FanResult
 } from './scoring';
-import { estimateMultiTurnWinProb } from './winProb';
+import { estimateMultiTurnWinProb, turnsLeftFromWall } from './winProb';
 
 const COPIES_PER_TILE_LIMIT = 4;
 
@@ -113,6 +113,8 @@ export interface EvOptions {
   genMode: GenMode;
   fanCap: number;
   baseScore: number;
+  /** 牌墙剩余张数：用于推算自己还能摸几巡（turnsLeft = floor(wallLeft/4)） */
+  wallLeft?: number;
 }
 
 /**
@@ -194,8 +196,9 @@ export function evaluateDiscard(
   discardIdx: number,
   opts: EvOptions
 ): EvDiscardSuggestion {
-  const { remainingPool, totalUnseen, melds, genMode, fanCap, baseScore } = opts;
+  const { remainingPool, totalUnseen, melds, genMode, fanCap, baseScore, wallLeft } = opts;
   const meldCount = melds.length;
+  const turnsLeft = turnsLeftFromWall(wallLeft);
 
   const after = hand.slice();
   after[discardIdx]--;
@@ -316,7 +319,7 @@ export function evaluateDiscard(
   } else {
     // 未听阶段：使用多步前瞻 DP 估算（参考 pystyle 期待値計算的递归思路）
     // 不再用粗糙的 stepProb^(shanten+1) × 0.6
-    winProbability = estimateMultiTurnWinProb(shantenAfter, effectiveCount, totalUnseen);
+    winProbability = estimateMultiTurnWinProb(shantenAfter, effectiveCount, totalUnseen, turnsLeft);
 
     const pots = estimateStructurePotentials(after, meldCount, melds);
     let estMaxFan = 0;
@@ -507,75 +510,98 @@ export function suggestDiscardsBySpeed(
  * 2. 因为补的牌不确定，取所有可能补牌的加权平均 EV
  * 3. 杠本身额外加 1 根的奖励，且番数上限提升
  */
+/**
+ * 暗杠候选评估：手中 4 张相同的牌，杠掉后变成 1 副明面子（kong），手牌从 14 张变 11 张
+ *
+ * 算法（近似版，参考社区 mahjong-helper / pystyle 的暗杠决策模板）：
+ *
+ *   原始版需要枚举所有 27 种补牌 × 27 种打牌 = 729 次 evaluateDiscard，太重。
+ *   用户给的近似公式：
+ *     kongEV ≈ baseEV(after kong, no draw)
+ *            + 0.5×base + 0.4    // +1 根 + 杠后多摸一张
+ *            − (breaksTenpaiStructure ? 2.0 : 0)
+ *
+ *   这里我们采用："取代表性补张（remainingPool 顶张） + 1 次 27 种打牌枚举"。
+ *   相比原来快 ~27 倍，精度上的关键事实仍被保留：
+ *     - 听牌结构破坏判定（重要）
+ *     - 杠后牌型的最优出牌（次要，但代表性补张已能反映大部分情形）
+ */
 function evaluateConcealedKong(
   hand: CountArray,
   kongIdx: number,
   opts: EvOptions
 ): EvDiscardSuggestion | null {
   if (hand[kongIdx] !== 4) return null;
-  const { remainingPool, totalUnseen, melds, genMode, fanCap, baseScore } = opts;
+  const { remainingPool, totalUnseen, melds, genMode, fanCap, baseScore, wallLeft } = opts;
 
-  // 杠后的"裸"状态：手中去掉这 4 张，melds 加 1 副 kong
   const afterKong = hand.slice();
   afterKong[kongIdx] = 0;
   const newMelds: MeldDecl[] = [...melds, { type: 'kong', tile: indexToCode(kongIdx) }];
 
-  // 现在手中是 10 张（原 14 - 4），需要再摸一张才到 11 张正常待出状态
-  // 取所有可能补牌位置的加权 EV
-  let bestEv = -Infinity;
+  // ===== 听牌结构破坏判定 =====
+  // 比较"把这 4 张当暗刻的 14 张"和"杠走 + 1 副 kong 计入 melds 的 10 张"两种状态的 shanten。
+  // 若杠后 shanten 反而上升，说明这一刻是当前听牌路径的关键，杠走会破坏结构。
+  const shBefore = calcShanten(hand, melds.length, melds).shanten;
+  const shAfterKong = calcShanten(afterKong, newMelds.length, newMelds).shanten;
+  const breaksTenpaiStructure = shAfterKong > shBefore;
+
+  // ===== 取 remainingPool 顶张作为代表性补牌（避免枚举全部 27 种 drawT） =====
+  let bestDrawT = -1;
+  let bestRemaining = 0;
+  for (let t = 0; t < TILE_KIND_COUNT; t++) {
+    if (afterKong[t] >= COPIES_PER_TILE_LIMIT) continue;
+    const r = remainingPool[t];
+    if (r > bestRemaining) {
+      bestRemaining = r;
+      bestDrawT = t;
+    }
+  }
+  if (bestDrawT < 0 || bestRemaining === 0) {
+    return null; // 牌堆见底，无法补牌
+  }
+
+  const drawn = afterKong.slice();
+  drawn[bestDrawT]++;
+
+  const subOpts: EvOptions = {
+    hand: drawn,
+    remainingPool,
+    totalUnseen: Math.max(1, totalUnseen - 1),
+    melds: newMelds,
+    genMode,
+    fanCap,
+    baseScore,
+    wallLeft: wallLeft !== undefined ? Math.max(0, wallLeft - 1) : undefined
+  };
+
+  let bestSubEv = -Infinity;
   let bestSubResult: EvDiscardSuggestion | null = null;
-  let weightedEv = 0;
-  let totalWeight = 0;
-
-  for (let drawT = 0; drawT < TILE_KIND_COUNT; drawT++) {
-    if (afterKong[drawT] >= COPIES_PER_TILE_LIMIT) continue;
-    const remaining = remainingPool[drawT];
-    if (remaining === 0) continue;
-    const drawn = afterKong.slice();
-    drawn[drawT]++;
-    // 在 drawn 状态下选最优出牌
-    const subOpts: EvOptions = {
-      hand: drawn,
-      remainingPool,
-      totalUnseen: Math.max(1, totalUnseen - 1),
-      melds: newMelds,
-      genMode,
-      fanCap,
-      baseScore
-    };
-    let bestSubEv = -Infinity;
-    let bestSub: EvDiscardSuggestion | null = null;
-    for (let d = 0; d < TILE_KIND_COUNT; d++) {
-      if (drawn[d] === 0) continue;
-      const cand = evaluateDiscard(drawn, d, subOpts);
-      if (cand.expectedScore > bestSubEv) {
-        bestSubEv = cand.expectedScore;
-        bestSub = cand;
-      }
-    }
-    if (bestSub) {
-      weightedEv += remaining * bestSubEv;
-      totalWeight += remaining;
-      if (bestSubEv > bestEv) {
-        bestEv = bestSubEv;
-        bestSubResult = bestSub;
-      }
+  for (let d = 0; d < TILE_KIND_COUNT; d++) {
+    if (drawn[d] === 0) continue;
+    const cand = evaluateDiscard(drawn, d, subOpts);
+    if (cand.expectedScore > bestSubEv) {
+      bestSubEv = cand.expectedScore;
+      bestSubResult = cand;
     }
   }
+  if (!bestSubResult) return null;
 
-  if (totalWeight === 0 || !bestSubResult) {
-    // 极端情况：杠后没法摸（整副已胡牌堆见底）
-    return null;
-  }
-
-  const expectedSubEv = weightedEv / totalWeight;
-  // 暗杠本身的价值组成：
-  //   1. +1 根 → ≈ 0.35 × base 的 EV 增量
-  //      （这是暗杠独有的，sub-EV 里 preservedGen 不包含被杠走的这一组）
-  //   2. 杠后能再摸一张牌（多一次进张机会）→ ≈ 0.4 × base
-  //   3. 暗杠后这一组永久锁定，避免被对家碰走/打错
-  // 之前用 0.6×base + 1（即 1.6）严重高估，校准后应在 0.7–0.9 区间
+  // ===== 暗杠本身的奖励 / 惩罚 =====
+  //   1. +1 根 + 杠后多摸一张 → ≈ 0.5×base + 0.4
+  //   2. 杠走破坏听牌结构 → −2.0
   const kongBonus = baseScore * 0.5 + 0.4;
+  const tenpaiBreakPenalty = breaksTenpaiStructure ? 2.0 : 0;
+
+  const reasons: string[] = [
+    `暗杠 ${indexToCode(kongIdx)}：4 张相同变为暗杠，+1 根、番数上限 +1`,
+    `杠后预期最优出牌：${bestSubResult.discardCode}（${bestSubResult.reasons[0] ?? ''}）`,
+    `杠后近似 EV ≈ ${bestSubEv.toFixed(2)}（代表性补牌 ${indexToCode(bestDrawT)}）`
+  ];
+  if (breaksTenpaiStructure) {
+    reasons.push(`⚠ 杠走会破坏当前听牌结构（向听 ${shBefore} → ${shAfterKong}），不建议杠`);
+  } else {
+    reasons.push('暗杠不影响向听数，且永久锁定 1 根，建议优先考虑');
+  }
 
   return {
     discard: kongIdx,
@@ -586,9 +612,9 @@ function evaluateConcealedKong(
     effectiveCount: bestSubResult.effectiveCount,
     probability: bestSubResult.probability,
 
-    expectedScore: expectedSubEv + kongBonus,
+    expectedScore: bestSubEv + kongBonus - tenpaiBreakPenalty,
     speedScore: bestSubResult.speedScore,
-    valueScore: bestSubResult.valueScore + kongBonus,
+    valueScore: bestSubResult.valueScore + kongBonus - tenpaiBreakPenalty,
     winProbability: bestSubResult.winProbability,
     averageFan: bestSubResult.averageFan,
     maxFanPotential: Math.min(fanCap, bestSubResult.maxFanPotential + 1),
@@ -604,11 +630,6 @@ function evaluateConcealedKong(
     pureSuitPotential: bestSubResult.pureSuitPotential,
 
     riskPenalty: 0,
-    reasons: [
-      `暗杠 ${indexToCode(kongIdx)}：4 张相同变为暗杠，+1 根、番数上限 +1`,
-      `杠后预期最优出牌：${bestSubResult.discardCode}（${bestSubResult.reasons[0] ?? ''}）`,
-      `杠后状态平均 EV ≈ ${expectedSubEv.toFixed(2)}`,
-      '暗杠不影响向听数，且永久锁定 1 根，建议优先考虑'
-    ]
+    reasons
   };
 }

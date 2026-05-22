@@ -70,6 +70,12 @@ export interface AnalysisInput {
   isKongDischarge?: boolean;
   /** 抢杠胡：别人补杠的牌正是自己胡的牌 */
   isRobKong?: boolean;
+  /** 天胡：庄家发完牌（含自己摸的第 14 张）后直接胡，仅庄家可成立，+6 番 */
+  isHeavenly?: boolean;
+  /** 地胡：闲家第一摸即胡（其间庄家与上家未碰未杠），+6 番 */
+  isEarthly?: boolean;
+  /** 牌墙剩余张数（用于 winProb 推算自己还能摸几巡：turnsLeft = floor(wallLeft/4)） */
+  wallLeft?: number;
   genMode?: GenMode;
   baseScore?: number;
   fanCap?: number;
@@ -184,6 +190,9 @@ export function analyze(input: AnalysisInput): WinAnalysis {
   const isAfterKong = input.isAfterKong ?? false;
   const isKongDischarge = input.isKongDischarge ?? false;
   const isRobKong = input.isRobKong ?? false;
+  const isHeavenly = input.isHeavenly ?? false;
+  const isEarthly = input.isEarthly ?? false;
+  const wallLeft = input.wallLeft;
   const objective: Objective = input.objective ?? 'expectedScore';
 
   // 已碰/杠的牌从牌池扣除
@@ -241,6 +250,8 @@ export function analyze(input: AnalysisInput): WinAnalysis {
       isAfterKong,
       isKongDischarge,
       isRobKong,
+      isHeavenly,
+      isEarthly,
       genMode
     });
     const settlement = settle(baseScore, fan, fanCap);
@@ -277,6 +288,8 @@ export function analyze(input: AnalysisInput): WinAnalysis {
           isAfterKong,
           isKongDischarge,
           isRobKong,
+          isHeavenly,
+          isEarthly,
           genMode
         });
         return {
@@ -308,7 +321,8 @@ export function analyze(input: AnalysisInput): WinAnalysis {
       melds,
       genMode,
       fanCap,
-      baseScore
+      baseScore,
+      wallLeft
     });
     const speedList = suggestDiscardsBySpeed(hand, {
       hand,
@@ -317,7 +331,8 @@ export function analyze(input: AnalysisInput): WinAnalysis {
       melds,
       genMode,
       fanCap,
-      baseScore
+      baseScore,
+      wallLeft
     });
 
     // 给速度模式的 top1 加上"拆根/降番"提示（如果适用）

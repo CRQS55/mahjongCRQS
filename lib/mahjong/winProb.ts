@@ -17,8 +17,22 @@
  *   - 避免精确枚举所有 hand 状态（代价指数级），用统计近似
  */
 
-const TURNS_LEFT_DEFAULT = 12; // 平均剩余摸牌轮数
+const TURNS_LEFT_DEFAULT = 12; // 平均剩余摸牌轮数（用户未提供 wallLeft 时的默认值）
 const PROB_DRAW_USEFUL_FACTOR = 1.0; // 摸到有用牌的折扣（实际场上别人也会拿牌）
+
+/**
+ * 由"牌墙剩余张数"推算自己还能摸几巡
+ *
+ * 川麻血战到底 4 家轮摸：每巡自己只摸 1 张，所以 turnsLeft ≈ floor(wallLeft / 4)
+ * - wallLeft 是牌墙未摸出的总张数，不是 totalUnseen（后者还包含他家手牌）
+ * - 当 wallLeft 未提供时回退到默认 12 巡
+ */
+export function turnsLeftFromWall(wallLeft?: number): number {
+  if (wallLeft === undefined || !isFinite(wallLeft) || wallLeft < 0) {
+    return TURNS_LEFT_DEFAULT;
+  }
+  return Math.max(0, Math.floor(wallLeft / 4));
+}
 
 /**
  * 给定当前 shanten 与 ukeire 张数 / 未见牌总数 → 估算最终胡牌概率
