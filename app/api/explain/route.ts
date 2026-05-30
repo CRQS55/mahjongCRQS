@@ -201,7 +201,7 @@ export async function POST(req: NextRequest): Promise<NextResponse<ExplainRespon
     userPrompt = buildUserPromptMain(body);
   }
 
-  const baseURL = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/+$/, '');
+  const baseURL = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').trim().replace(/\/+$/, '');
   const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
 
   const requestBody = {
