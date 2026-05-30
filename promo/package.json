@@ -1,0 +1,26 @@
+{
+  "name": "sichuan-mahjong-promo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "9:16 60s promo video for mjcrqs.top, built with Remotion",
+  "scripts": {
+    "setup": "node scripts/copy-tiles.js",
+    "start": "remotion studio src/Root.tsx",
+    "render": "remotion render src/Root.tsx PromoVideo out/promo.mp4",
+    "render:webm": "remotion render src/Root.tsx PromoVideo out/promo.webm --codec=vp9",
+    "still": "remotion still src/Root.tsx PromoVideo out/cover.png --frame=30"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.300",
+    "@remotion/bundler": "^4.0.300",
+    "@remotion/renderer": "^4.0.300",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "^4.0.300"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.4.0"
+  }
+}

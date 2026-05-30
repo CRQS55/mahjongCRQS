@@ -460,6 +460,10 @@ export default function Home() {
               Object.values(visible).reduce((a, b) => a + b, 0) -
               melds.reduce((s, m) => s + (m.type === 'kong' ? 4 : 3), 0)
           )}
+          handCodes={hand}
+          melds={melds}
+          visible={visible}
+          genMode={genMode}
         />
       )}
 
@@ -521,7 +525,21 @@ function Footer() {
   );
 }
 
-function ResultPanel({ result, totalUnseen }: { result: AnalysisResult; totalUnseen: number }) {
+function ResultPanel({
+  result,
+  totalUnseen,
+  handCodes,
+  melds,
+  visible,
+  genMode
+}: {
+  result: AnalysisResult;
+  totalUnseen: number;
+  handCodes: string[];
+  melds: { type: 'pung' | 'kong'; tile: string }[];
+  visible: Record<string, number>;
+  genMode: 'fan' | 'di';
+}) {
   const phaseConfig = {
     win: { label: '胡牌！🎉', color: 'bg-green-100 text-green-800 border-green-300' },
     tenpai: { label: '已下叫', color: 'bg-emerald-100 text-emerald-800 border-emerald-300' },
@@ -530,6 +548,63 @@ function ResultPanel({ result, totalUnseen }: { result: AnalysisResult; totalUns
 
   const cfg = phaseConfig[result.phase];
   const totalEffective = result.suggestedDiscards?.[0]?.effectiveCount ?? 0;
+
+  // === AI 解释 ===
+  const [explainLoading, setExplainLoading] = useState(false);
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [explainError, setExplainError] = useState<string | null>(null);
+
+  const requestExplanation = async (mode: 'main' | 'mainTenpai') => {
+    setExplainLoading(true);
+    setExplainError(null);
+    setExplanation(null);
+    try {
+      const visibleCodes: string[] = [];
+      for (const [k, v] of Object.entries(visible)) for (let i = 0; i < v; i++) visibleCodes.push(k);
+      const payload: any = {
+        mode,
+        handCodes,
+        visibleCodes,
+        melds,
+        genMode
+      };
+      if (mode === 'main' && result.suggestedDiscards) {
+        payload.recommendedDiscards = result.suggestedDiscards.slice(0, 5).map(s => ({
+          code: s.discardCode,
+          shantenAfter: s.shantenAfter,
+          effectiveCount: s.effectiveCount,
+          expectedScore: s.expectedScore,
+          speedScore: s.speedScore,
+          valueScore: s.valueScore,
+          averageFan: s.averageFan,
+          maxFanPotential: s.maxFanPotential,
+          reasons: s.reasons,
+          actionType: s.actionType
+        }));
+      }
+      if (mode === 'mainTenpai' && result.waitingTiles) {
+        payload.waitingTiles = result.waitingTiles.map(w => ({
+          code: w.code,
+          remaining: w.remaining,
+          fan: w.fan,
+          winType: w.winType
+        }));
+        payload.shanten = result.shanten.shanten;
+      }
+      const res = await fetch('/api/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!data.ok) setExplainError(data.error ?? '解释失败');
+      else setExplanation(data.explanation);
+    } catch (e: any) {
+      setExplainError(e?.message ?? '解释请求失败');
+    } finally {
+      setExplainLoading(false);
+    }
+  };
 
   return (
     <section className="glass-card p-5 md:p-6 mt-6 space-y-4">
@@ -616,6 +691,15 @@ function ResultPanel({ result, totalUnseen }: { result: AnalysisResult; totalUns
                   </div>
                 ))}
             </div>
+            <div className="mt-3">
+              <button
+                onClick={() => requestExplanation('mainTenpai')}
+                disabled={explainLoading}
+                className="btn-primary text-sm"
+              >
+                {explainLoading ? '🤖 AI 思考中…' : '💡 让 AI 解释这副听牌好不好'}
+              </button>
+            </div>
           </div>
         );
       })()}
@@ -661,6 +745,19 @@ function ResultPanel({ result, totalUnseen }: { result: AnalysisResult; totalUns
               </details>
             );
           })()}
+
+          {/* AI 解释推荐 */}
+          <div className="mt-3">
+            <button
+              onClick={() => requestExplanation('main')}
+              disabled={explainLoading}
+              className="btn-primary text-sm"
+            >
+              {explainLoading
+                ? '🤖 AI 思考中…'
+                : `💡 让 AI 解释为什么打 ${result.suggestedDiscards[0].discardCode[0]}${({ m: '万', s: '条', p: '筒' } as any)[result.suggestedDiscards[0].discardCode[1]]} 是最佳选择`}
+            </button>
+          </div>
         </div>
       )}
 
@@ -691,6 +788,18 @@ function ResultPanel({ result, totalUnseen }: { result: AnalysisResult; totalUns
             ))}
           </div>
         </details>
+      )}
+
+      {/* AI 解释结果 */}
+      {(explanation || explainError) && (
+        <div className="mt-4 rounded-xl border p-4 bg-emerald-50/50 border-emerald-200">
+          <div className="text-sm font-semibold text-emerald-800 mb-2">🤖 AI 教练解释</div>
+          {explainError ? (
+            <div className="text-sm text-red-700">⚠️ {explainError}</div>
+          ) : (
+            <div className="text-sm text-sage-800 whitespace-pre-wrap leading-relaxed">{explanation}</div>
+          )}
+        </div>
       )}
     </section>
   );

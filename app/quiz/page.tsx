@@ -36,6 +36,45 @@ export default function QuizPage() {
   const [submitted, setSubmitted] = useState<{ delta: number; correct?: any } | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // === AI 解释（t2/t3 用户选项不是 #1 时使用）===
+  const [explainLoading, setExplainLoading] = useState(false);
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [explainError, setExplainError] = useState<string | null>(null);
+
+  const requestExplanation = async () => {
+    if (!quiz || (quiz.type !== 't2' && quiz.type !== 't3') || !answerOne) return;
+    setExplainLoading(true);
+    setExplainError(null);
+    setExplanation(null);
+    try {
+      const q = quiz as T2Quiz | T3Quiz;
+      const res = await fetch('/api/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: q.type === 't3' ? 'quizT3' : 'quizT2',
+          handCodes: q.handCodes,
+          visibleCodes: q.type === 't3' ? (q as T3Quiz).visibleCodes : [],
+          userChoice: answerOne,
+          bestDiscards: q.bestDiscards.map(d => ({
+            code: d.code,
+            rank: d.rank,
+            effectiveCount: d.effectiveCount,
+            expectedScore: d.expectedScore,
+            reasons: d.reasons
+          }))
+        })
+      });
+      const data = await res.json();
+      if (!data.ok) setExplainError(data.error ?? '解释失败');
+      else setExplanation(data.explanation);
+    } catch (e: any) {
+      setExplainError(e?.message ?? '解释请求失败');
+    } finally {
+      setExplainLoading(false);
+    }
+  };
+
   useEffect(() => {
     setRecord(loadRecord());
   }, []);
@@ -48,6 +87,8 @@ export default function QuizPage() {
     setSubmitted(null);
     setAnswerSet(new Set());
     setAnswerOne(null);
+    setExplanation(null);
+    setExplainError(null);
     try {
       const res = await fetch(`/api/quiz?type=${t}`);
       const data = await res.json();
@@ -332,6 +373,35 @@ export default function QuizPage() {
                           )}
                         </div>
                       ))}
+                      {/* AI 解释按钮（仅当用户选择的不是 #1 时显示） */}
+                      {(() => {
+                        const userRank = (quiz as T2Quiz).bestDiscards.find(d => d.code === answerOne)?.rank;
+                        if (userRank === 1) return null;
+                        return (
+                          <div className="mt-3">
+                            <button
+                              onClick={requestExplanation}
+                              disabled={explainLoading}
+                              className="btn-primary text-sm"
+                            >
+                              {explainLoading
+                                ? '🤖 AI 思考中…'
+                                : `💡 让 AI 解释为什么打 ${answerOne?.[0] ?? ''}${({ m: '万', s: '条', p: '筒' } as any)[answerOne?.[1] ?? '']} 不够好`}
+                            </button>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                  {/* AI 解释结果 */}
+                  {(explanation || explainError) && (
+                    <div className="mt-4 rounded-xl border p-4 bg-emerald-50/50 border-emerald-200">
+                      <div className="text-sm font-semibold text-emerald-800 mb-2">🤖 AI 教练解释</div>
+                      {explainError ? (
+                        <div className="text-sm text-red-700">⚠️ {explainError}</div>
+                      ) : (
+                        <div className="text-sm text-sage-800 whitespace-pre-wrap leading-relaxed">{explanation}</div>
+                      )}
                     </div>
                   )}
                 </div>
