@@ -19,6 +19,7 @@ interface DiscardCandidate {
   code: string;
   rank?: number;
   effectiveCount?: number;
+  effectiveTiles?: { code: string; remaining: number }[];
   expectedScore?: number;
   speedScore?: number;
   valueScore?: number;
@@ -77,6 +78,10 @@ function discardToText(d: DiscardCandidate): string {
   const parts: string[] = [tileToText(d.code)];
   if (typeof d.shantenAfter === 'number') parts.push(`打后向听=${d.shantenAfter}`);
   if (typeof d.effectiveCount === 'number') parts.push(`有效进张=${d.effectiveCount}张`);
+  if (d.effectiveTiles && d.effectiveTiles.length > 0) {
+    const tilesStr = d.effectiveTiles.map(t => `${tileToText(t.code)}(剩${t.remaining})`).join('、');
+    parts.push(`进张明细：${tilesStr}`);
+  }
   if (typeof d.expectedScore === 'number') parts.push(`综合分=${d.expectedScore.toFixed(2)}`);
   if (typeof d.speedScore === 'number') parts.push(`下叫速度=${d.speedScore.toFixed(2)}`);
   if (typeof d.valueScore === 'number') parts.push(`番数潜力=${d.valueScore.toFixed(2)}`);
@@ -99,7 +104,6 @@ const SYSTEM_PROMPT = `你是一位资深的四川麻将（血战到底）教练
 - 用中文，分点说明，每点不超过 2 句话
 - 总长度控制在 200-350 字
 - 直接讲道理，不要客套话，不要重复题目
-- 涉及具体数字时要解释含义（例如"有效进张 12 张"≈"摸到能让你前进的牌还有 12 张"）
 - 如果是"为什么用户的选择不好"，先肯定一下用户的思路再指出更优解；语气友好不要打击
 - 如果是"为什么推荐这张"，从下叫速度、番数潜力、根/暗刻保留三个维度讲清楚`;
 
@@ -163,10 +167,17 @@ function buildUserPromptQuiz(b: ExplainBody, withVisible: boolean): string {
   }
   lines.push('');
   lines.push('【任务】');
-  lines.push(`玩家选择了打 ${tileToText(b.userChoice ?? '')}，但算法推荐的更好。请用 200-350 字、口吻友好地讲清楚：`);
-  lines.push('1) 玩家这一张可能的考虑（先肯定其合理性）；');
-  lines.push('2) 但具体哪里不够好（向听数？进张数？拆了根或暗刻？番数潜力？）；');
-  lines.push('3) 排第一的那张胜在哪里，玩家以后看到类似牌型可以怎样想。');
+  lines.push(`玩家选择了打 ${tileToText(b.userChoice ?? '')}，但算法推荐的更好。请用 200-350 字、口吻友好地讲清楚，必须分成两部分对比写：`);
+  lines.push('');
+  lines.push('第一部分：为什么玩家选择的这张不够好');
+  lines.push('- 先简要肯定玩家可能的思路');
+  lines.push('- 再指出具体问题：向听数变高？有效进张少？拆了根或暗刻？番数潜力下降？');
+  lines.push('- 结合上方给出的"进张明细"具体牌张来分析，不要只报数字');
+  lines.push('');
+  lines.push('第二部分：为什么排名第一的牌更好');
+  lines.push('- 具体好在哪：下叫速度更快？听的牌更多？保留了根/暗刻？');
+  lines.push('- 同样结合"进张明细"来对比说明，让读者直观感受到差距');
+  lines.push('- 最后给一句总结：以后遇到类似牌型可以怎样想');
   return lines.join('\n');
 }
 

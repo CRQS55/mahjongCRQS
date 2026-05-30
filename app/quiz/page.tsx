@@ -21,7 +21,7 @@ interface T1Quiz { type: 't1'; handCodes: string[]; waitingTiles: { code: string
 interface T2Quiz {
   type: 't2';
   handCodes: string[];
-  bestDiscards: { code: string; rank: number; effectiveCount: number; expectedScore?: number; reasons?: string[] }[];
+  bestDiscards: { code: string; rank: number; effectiveCount: number; effectiveTiles: { code: string; remaining: number }[]; expectedScore?: number; reasons?: string[] }[];
   algorithm?: 'expectedScore';
 }
 interface T3Quiz extends Omit<T2Quiz, 'type'> { type: 't3'; visibleCodes: string[] }
@@ -60,6 +60,7 @@ export default function QuizPage() {
             code: d.code,
             rank: d.rank,
             effectiveCount: d.effectiveCount,
+            effectiveTiles: d.effectiveTiles,
             expectedScore: d.expectedScore,
             reasons: d.reasons
           }))

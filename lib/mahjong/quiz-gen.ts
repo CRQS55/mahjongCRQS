@@ -124,7 +124,7 @@ export function genTenpaiHand(): {
  */
 export function genNotenHand(): {
   handCodes: string[];
-  bestDiscards: { code: string; rank: number; effectiveCount: number; expectedScore: number; reasons: string[] }[];
+  bestDiscards: { code: string; rank: number; effectiveCount: number; effectiveTiles: { code: string; remaining: number }[]; expectedScore: number; reasons: string[] }[];
   algorithm: 'expectedScore';
 } {
   for (let attempt = 0; attempt < 200; attempt++) {
@@ -173,6 +173,7 @@ export function genNotenHand(): {
         code: s.discardCode,
         rank: i + 1,
         effectiveCount: s.effectiveCount,
+        effectiveTiles: s.effectiveTiles.map(t => ({ code: t.code, remaining: t.remaining })),
         expectedScore: parseFloat(s.expectedScore.toFixed(3)),
         reasons: s.reasons.slice(0, 4)
       })),
@@ -188,7 +189,7 @@ export function genNotenHand(): {
 export function genGameScene(): {
   handCodes: string[];
   visibleCodes: string[];
-  bestDiscards: { code: string; rank: number; effectiveCount: number; expectedScore: number; reasons: string[] }[];
+  bestDiscards: { code: string; rank: number; effectiveCount: number; effectiveTiles: { code: string; remaining: number }[]; expectedScore: number; reasons: string[] }[];
   algorithm: 'expectedScore';
 } {
   for (let attempt = 0; attempt < 200; attempt++) {
@@ -233,6 +234,7 @@ export function genGameScene(): {
         code: s.discardCode,
         rank: i + 1,
         effectiveCount: s.effectiveCount,
+        effectiveTiles: s.effectiveTiles.map(t => ({ code: t.code, remaining: t.remaining })),
         expectedScore: parseFloat(s.expectedScore.toFixed(3)),
         reasons: s.reasons.slice(0, 4)
       })),
