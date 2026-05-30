@@ -204,12 +204,20 @@ export async function POST(req: NextRequest): Promise<NextResponse<ExplainRespon
   const baseURL = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').trim().replace(/\/+$/, '');
   const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
 
+  // 与 /api/recognize 保持一致：不使用 system 顶层字段，避免部分中转代理 422
   const requestBody = {
     model,
     max_tokens: 1024,
-    system: SYSTEM_PROMPT,
     messages: [
-      { role: 'user', content: [{ type: 'text', text: userPrompt }] }
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: `${SYSTEM_PROMPT}\n\n${userPrompt}`
+          }
+        ]
+      }
     ]
   };
 
