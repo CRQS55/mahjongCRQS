@@ -22,27 +22,27 @@ PITCH = os.environ.get("PITCH", "+0Hz")
 OUT = Path(__file__).resolve().parent.parent / "public" / "audio"
 
 LINES = [
-    # 01 hook        0–3s
-    "打川麻，最纠结的就是这一刻——到底打哪张？",
-    # 02 product    3–7s
-    "打开川麻小助手，拍一下手牌，剩下的交给它。",
-    # 03 scan       7–12s
-    "万、条、筒自动识别，不用一张张手动点。",
-    # 04 tenpai    12–18s
-    "十三张时，它会告诉你：听没听牌，能胡哪些牌，还剩几张。",
-    # 05 top6      18–26s
-    "十四张时，它直接给出出牌建议Top六，哪张更优，排得清清楚楚。",
-    # 06 value     26–32s
-    "不只是看快不快，还会综合考虑牌型价值和番数潜力。",
-    # 07 visible   32–38s
-    "场上已经打出过什么牌，也能录入，剩余张数会跟着重新刷新。",
-    # 08 strategy  38–45s
-    "定缺、换三张、要不要碰，开局到中盘都能辅助判断。",
-    # 09 scoring   45–51s
-    "海底、杠上花、抢杠胡、加番加底，结算也不用再心算。",
-    # 10 quiz      51–56s
-    "想练判断？还有测试水平模式，听几门、打哪张、看局打牌，一边练一边升段。",
-    # 11 end       56–60s
+    # 01 hook         3s window — keep punchy
+    "打川麻最纠结的，就是这一刻。",
+    # 02 productIntro 3s window — URL is what users need to remember
+    "打开浏览器，访问 mjcrqs.top。",
+    # 03 input        3s window — was too long
+    "拍一下，或者点一下，都行。",
+    # 04 tenpai       5s window
+    "十三张时，它告诉你听没听牌、还剩几张。",
+    # 05 top6         7s window
+    "十四张时，直接给出出牌建议Top六，哪张更优一目了然。",
+    # 06 aiCoach      9s window ★ — was 10.7s, must trim
+    "AI教练直接讲明白：为什么这张更好。下叫多快、保留哪根、和第二名差在哪——一句话讲透。",
+    # 07 visibleTiles 5s window
+    "场上打过的牌也能录入，剩余张数自动重算。",
+    # 08 strategy     6s window
+    "定缺、换三张、要不要碰，开局到中盘都帮你想。",
+    # 09 scoring      5s window — was 5.5s, trim
+    "番数结算也能一键搞定，不用心算。",
+    # 10 quiz         6s window
+    "测试水平模式还能复盘——答错了，AI 告诉你为什么。",
+    # 11 end          8s window
     "川麻小助手，让每一次选择，都有参考答案。",
 ]
 

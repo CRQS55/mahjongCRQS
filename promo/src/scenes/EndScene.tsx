@@ -2,6 +2,7 @@ import React from 'react';
 import {
   AbsoluteFill,
   interpolate,
+  staticFile,
   useCurrentFrame,
   useVideoConfig,
   spring,
@@ -28,6 +29,15 @@ export const EndScene: React.FC = () => {
           position: 'absolute',
           inset: 0,
           background: `radial-gradient(ellipse at 50% 40%, ${COLORS.sage100} 0%, ${COLORS.sage300} 60%, ${COLORS.sage600} 100%)`,
+        }}
+      />
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: `center / cover no-repeat url(${staticFile('assets/gpt-end-galaxy.png')})`,
+          opacity: 0.55,
+          mixBlendMode: 'multiply',
         }}
       />
       <svg

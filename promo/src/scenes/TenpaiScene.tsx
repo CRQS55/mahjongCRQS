@@ -3,6 +3,7 @@ import {
   AbsoluteFill,
   interpolate,
   spring,
+  staticFile,
   useCurrentFrame,
   useVideoConfig,
 } from 'remotion';
@@ -35,6 +36,15 @@ export const TenpaiScene: React.FC = () => {
   return (
     <AbsoluteFill>
       <SceneBackground />
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: `center / cover no-repeat url(${staticFile('assets/gpt-tenpai-spotlight.png')})`,
+          opacity: 0.35,
+          mixBlendMode: 'multiply',
+        }}
+      />
       <BigCaption text="胡哪几张，一眼看清" />
 
       <div

@@ -34,7 +34,7 @@ export const HookScene: React.FC = () => {
           opacity: bgFade,
           background: `
             radial-gradient(ellipse at 50% 70%, #1d3a25 0%, #0a140d 70%),
-            url(${staticFile('assets/gpt-mahjong-table.png')}) center/cover
+            url(${staticFile('assets/gpt-hook-cinematic.png')}) center/cover
           `,
           backgroundBlendMode: 'multiply',
         }}

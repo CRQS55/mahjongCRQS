@@ -3,10 +3,10 @@ import { AbsoluteFill, Audio, Sequence, Series, staticFile } from 'remotion';
 import { SCENES, COLORS, FONT_FAMILY } from './constants';
 import { HookScene } from './scenes/HookScene';
 import { ProductIntroScene } from './scenes/ProductIntroScene';
-import { ScanScene } from './scenes/ScanScene';
+import { InputScene } from './scenes/InputScene';
 import { TenpaiScene } from './scenes/TenpaiScene';
 import { Top6Scene } from './scenes/Top6Scene';
-import { ValueScene } from './scenes/ValueScene';
+import { AICoachScene } from './scenes/AICoachScene';
 import { VisibleTilesScene } from './scenes/VisibleTilesScene';
 import { StrategyScene } from './scenes/StrategyScene';
 import { ScoringScene } from './scenes/ScoringScene';
@@ -16,10 +16,10 @@ import { EndScene } from './scenes/EndScene';
 const SCENE_MAP: Record<string, React.FC> = {
   hook: HookScene,
   productIntro: ProductIntroScene,
-  scan: ScanScene,
+  input: InputScene,
   tenpai: TenpaiScene,
   top6: Top6Scene,
-  value: ValueScene,
+  aiCoach: AICoachScene,
   visibleTiles: VisibleTilesScene,
   strategy: StrategyScene,
   scoring: ScoringScene,
@@ -40,39 +40,40 @@ const HAS_BGM = false; // flip to true after placing public/audio/bgm.mp3
 
 /**
  * Per-scene voice delay, in frames, on top of SCENES[i].from.
- * Use to push a clip back when the previous line hasn't finished yet.
- * Index matches SCENES[].
+ * Index matches SCENES[]. With v2 lines all comfortably shorter than their
+ * scenes, every entry can be 0.
  */
 const VOICE_OFFSET: number[] = [
   0,  // 01 hook
   0,  // 02 productIntro
-  0,  // 03 scan
+  0,  // 03 input
   0,  // 04 tenpai
   0,  // 05 top6
-  0,  // 06 value
+  0,  // 06 aiCoach ★
   0,  // 07 visibleTiles
   0,  // 08 strategy
   0,  // 09 scoring
   0,  // 10 quiz
-  60, // 11 end — wait 2s. voice-10 even at 1.18× ends near 57.5s, so start 11 at 58s.
+  0,  // 11 end
 ];
 
 /**
- * Per-scene playback rate. 1.0 = original. 1.15 = 15% faster (and slightly higher pitch).
- * Use when a clip is too long to fit its scene without overlapping the next line.
+ * Per-scene playback rate, calibrated against actual mp3 lengths
+ * (run `ffprobe -show_entries format=duration` after build-voice.py).
+ * Goal: every clip ends ≥0.1s before its scene's end so lines never overlap.
  */
 const VOICE_RATE: number[] = [
-  1.15, // 01 hook — tighten so it doesn't bleed into product intro
-  1.0,  // 02
-  1.0,  // 03
-  1.0,  // 04
-  1.0,  // 05
-  1.0,  // 06
-  1.0,  // 07
-  1.0,  // 08
-  1.0,  // 09
-  1.18, // 10 quiz — original 7.7s won't fit in the 5s scene; speed up + push #11 back
-  1.0,  // 11
+  1.10, // 01 hook            mp3 3.00s / scene 3s → 2.73s ✓
+  1.05, // 02 productIntro    mp3 3.91s / scene 4s → 3.72s ✓
+  1.05, // 03 input           mp3 2.95s / scene 3s → 2.81s ✓
+  1.0,  // 04 tenpai          mp3 4.06s / scene 5s ✓
+  1.0,  // 05 top6            mp3 5.66s / scene 7s ✓
+  1.0,  // 06 aiCoach         mp3 8.74s / scene 9s ✓
+  1.0,  // 07 visibleTiles    mp3 4.30s / scene 5s ✓
+  1.0,  // 08 strategy        mp3 4.73s / scene 6s ✓
+  1.0,  // 09 scoring         mp3 3.53s / scene 5s ✓
+  1.0,  // 10 quiz            mp3 4.82s / scene 6s ✓
+  1.0,  // 11 end             mp3 4.06s / scene 7s ✓
 ];
 
 export const PromoVideo: React.FC = () => {

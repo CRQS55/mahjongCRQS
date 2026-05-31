@@ -12,8 +12,12 @@ import { PhoneFrame } from '../components/PhoneFrame';
 import { BigCaption } from '../components/BigCaption';
 
 /**
- * 3-7s — product intro
- * Phone slides up from bottom, app homepage shown, 拍照识牌 button glows.
+ * 3-6s — product intro (v2: 3s, URL-forward)
+ * Phone slides up from bottom; the dominant element on screen is the
+ * URL pill `mjcrqs.top` so viewers know exactly where to go.
+ * Searching "川麻小助手" doesn't surface our site, so the URL has to do
+ * the heavy lifting.
+ *
  * TODO: replace homepage screenshot with promo/public/assets/real-homepage.png
  */
 export const ProductIntroScene: React.FC = () => {
@@ -28,22 +32,96 @@ export const ProductIntroScene: React.FC = () => {
   const translateY = interpolate(slide, [0, 1], [1700, 280]);
   const buttonPulse = 1 + 0.06 * Math.sin(frame * 0.35);
 
+  // Big URL pill near the bottom — pops in after phone settles
+  const urlIn = spring({
+    frame: frame - 22,
+    fps,
+    config: { damping: 14, stiffness: 130 },
+  });
+  const urlScale = interpolate(urlIn, [0, 1], [0.6, 1]);
+  const urlGlow = 1 + 0.08 * Math.sin(frame * 0.32);
+
   return (
     <AbsoluteFill>
       <SceneBackground />
-      <BigCaption text="拍一下，直接分析" />
+      <BigCaption text="川麻小助手" subText="访问 mjcrqs.top 立即体验" />
 
       <div
         style={{
           position: 'absolute',
           left: '50%',
           top: 0,
-          transform: `translateX(-50%) translateY(${translateY}px)`,
+          transform: `translateX(-50%) translateY(${translateY}px) scale(0.78)`,
+          transformOrigin: 'top center',
         }}
       >
         <PhoneFrame width={680} height={1380}>
           <FauxHomepage frame={frame} buttonPulse={buttonPulse} />
         </PhoneFrame>
+      </div>
+
+      {/* Dominant URL banner — anchored to lower 1/3 of the canvas */}
+      <div
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          bottom: 240,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 18,
+          opacity: interpolate(urlIn, [0, 0.4], [0, 1]),
+          transform: `scale(${urlScale * urlGlow})`,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 30,
+            fontWeight: 700,
+            color: COLORS.sage700,
+            letterSpacing: 4,
+            opacity: 0.85,
+          }}
+        >
+          打开浏览器，输入网址
+        </div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 22,
+            padding: '28px 64px',
+            borderRadius: 999,
+            background: `linear-gradient(135deg, ${COLORS.sage600}, ${COLORS.sage800})`,
+            color: '#fff',
+            fontSize: 96,
+            fontWeight: 900,
+            letterSpacing: 4,
+            boxShadow: `0 24px 60px ${COLORS.sage700}aa, 0 0 ${
+              60 * urlGlow
+            }px ${COLORS.gold}66`,
+            border: `4px solid ${COLORS.gold}`,
+          }}
+        >
+          <span style={{ fontSize: 60 }}>🌐</span>
+          <span style={{ fontFamily: 'monospace', fontWeight: 900 }}>
+            mjcrqs.top
+          </span>
+        </div>
+        <div
+          style={{
+            fontSize: 26,
+            fontWeight: 600,
+            color: COLORS.sage600,
+            background: 'rgba(255,255,255,0.85)',
+            padding: '8px 22px',
+            borderRadius: 999,
+            border: `1px solid ${COLORS.sage300}`,
+          }}
+        >
+          直接访问，无需下载
+        </div>
       </div>
     </AbsoluteFill>
   );

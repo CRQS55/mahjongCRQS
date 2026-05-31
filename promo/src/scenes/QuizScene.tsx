@@ -33,13 +33,13 @@ interface Tier {
 }
 const TIERS: Tier[] = [
   { name: '黑铁', badge: 'tier-heitie.png' },
-  { name: '青铜' },
+  { name: '青铜', badge: 'tier-qingtong.png' },
   { name: '白银', badge: 'tier-baiyin.png' },
-  { name: '黄金' },
-  { name: '铂金' },
+  { name: '黄金', badge: 'tier-huangjin.png' },
+  { name: '铂金', badge: 'tier-bojin.png' },
   { name: '钻石', badge: 'tier-zuanshi.png' },
-  { name: '超凡' },
-  { name: '神话' },
+  { name: '超凡', badge: 'tier-chaofan.png' },
+  { name: '神话', badge: 'tier-shenhua.png' },
   { name: '赋能', badge: 'tier-funeng.png' },
 ];
 
@@ -50,7 +50,16 @@ export const QuizScene: React.FC = () => {
   return (
     <AbsoluteFill>
       <SceneBackground />
-      <BigCaption text="还能练牌感，冲段位" />
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: `center / cover no-repeat url(${staticFile('assets/gpt-quiz-arena.png')})`,
+          opacity: 0.32,
+          mixBlendMode: 'multiply',
+        }}
+      />
+      <BigCaption text="练牌感、冲段位" subText="答错了，AI 还会复盘" />
 
       {/* big real screenshot card */}
       <div

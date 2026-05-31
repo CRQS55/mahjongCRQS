@@ -56,6 +56,15 @@ export const StrategyScene: React.FC = () => {
   return (
     <AbsoluteFill>
       <SceneBackground />
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: `center / cover no-repeat url(${staticFile('assets/gpt-strategy-board.png')})`,
+          opacity: 0.32,
+          mixBlendMode: 'multiply',
+        }}
+      />
       <BigCaption text="开局、中盘，都能帮你想一步" />
 
       {/* tab strip */}

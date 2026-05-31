@@ -2,6 +2,7 @@ import React from 'react';
 import {
   AbsoluteFill,
   interpolate,
+  staticFile,
   useCurrentFrame,
   useVideoConfig,
   spring,
@@ -37,6 +38,15 @@ export const ScoringScene: React.FC = () => {
   return (
     <AbsoluteFill>
       <SceneBackground />
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: `center / cover no-repeat url(${staticFile('assets/gpt-scoring-coin.png')})`,
+          opacity: 0.32,
+          mixBlendMode: 'multiply',
+        }}
+      />
       <BigCaption text="番数结算，也能一键搞定" />
 
       <div
